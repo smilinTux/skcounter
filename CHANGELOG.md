@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added the HTTPS chiap04 aggregate collector with strict snapshot validation, CapAuth verification, trusted issuer binding, clock-skew and replay controls, append-only observations, idempotent acknowledgements, and a rebuildable projection outbox.
 - Added the per-principal edge runner with a private durable outbox, short-lived `skcounter.report.submit` tokens, bounded retry, acknowledgement verification, sent retention, and status reporting.
 - Added isolated service identity and collector TLS provisioning tools.
+- Added a checksum-verified user-level Node.js bootstrap for eligible nodes whose system runtime is older than Node.js 20.
 - Added hardened systemd collector and observable per-user timer units.
 - Added collector health and Prometheus metrics endpoints.
 - Added Node and Python tests for schema denial, identity binding, duplicate handling, replay, outage recovery, and private storage.

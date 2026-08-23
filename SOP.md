@@ -138,6 +138,13 @@ SKCounter owns only normalized observations beneath `${SKCOUNTER_STATE_DIR:-${XD
 | Operating system | Linux or WSL for the current installer |
 | Runtime privilege | Harness-owning user, never root |
 
+Nodes whose system package is older than Node.js 20 use the checksum-verified user runtime without changing the operating-system package:
+
+```bash
+./scripts/install-node-user.sh 22.23.2
+node --version
+```
+
 ### Reproducible local build
 
 ```bash
