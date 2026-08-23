@@ -95,7 +95,18 @@ def _collect(config: dict[str, Any], outbox: Path) -> None:
     command = [str(config["skcounter_bin"]), "collect", "--output-dir", str(outbox)]
     if config.get("since"):
         command.extend(["--since", str(config["since"])])
-    result = subprocess.run(command, capture_output=True, text=True, timeout=int(config.get("collection_timeout_seconds", 120)))
+    environment = {
+        **os.environ,
+        "SKCOUNTER_NODE_ID": str(config["node_id"]),
+        "SKCOUNTER_PRINCIPAL_ID": str(config["principal_id"]),
+    }
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=int(config.get("collection_timeout_seconds", 120)),
+        env=environment,
+    )
     if result.returncode != 0:
         raise EdgeError("local aggregate collection failed")
 

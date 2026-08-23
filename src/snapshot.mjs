@@ -176,7 +176,7 @@ export function collectSnapshot({
   backend,
   options,
   now = new Date(),
-  nodeId = hostname(),
+  nodeId = process.env.SKCOUNTER_NODE_ID || hostname(),
   principalId = process.env.SKCOUNTER_PRINCIPAL_ID || process.env.USER || process.env.LOGNAME,
   bucketTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
 }) {
