@@ -58,6 +58,7 @@ class EdgeTest(unittest.TestCase):
         path.parent.mkdir(parents=True, mode=0o700)
         value = {
             "schema_version": "skcounter.snapshot.v1",
+            "measurement_lane": "harness_reported",
             "node_id": "chiap08",
             "principal_id": "skuser01",
             "idempotency_key": "a" * 64,

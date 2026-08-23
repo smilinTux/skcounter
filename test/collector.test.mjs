@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { collectSnapshot } from "../src/snapshot.mjs";
+import { canonicalJson } from "../src/snapshot.mjs";
 import { authorize, CollectorStore, RequestError, validateSnapshot } from "../services/collector.mjs";
 
 function snapshot() {
@@ -62,6 +64,40 @@ function claims() {
 
 test("collector validates the canonical privacy-safe snapshot", () => {
   assert.equal(validateSnapshot(snapshot()).schema_version, "skcounter.snapshot.v1");
+});
+
+test("collector keeps gateway observations on their dedicated scope and lane", () => {
+  const gateway = snapshot();
+  gateway.measurement_lane = "gateway_observed";
+  gateway.principal_id = "skgateway";
+  gateway.collector.backend = "skgateway";
+  gateway.collector.backend_version = "0.1.0";
+  const unsigned = structuredClone(gateway);
+  delete unsigned.idempotency_key;
+  delete unsigned.payload_hash;
+  const hash = createHash("sha256").update(canonicalJson(unsigned)).digest("hex");
+  gateway.idempotency_key = hash;
+  gateway.payload_hash = hash;
+  assert.equal(validateSnapshot(gateway).measurement_lane, "gateway_observed");
+
+  const gatewayConfig = config();
+  gatewayConfig.trusted_issuers.ABCDEF = {
+    enabled: true,
+    node_id: "chiap08",
+    principal_id: "skgateway",
+    subject: "skcounter:chiap08:skgateway",
+    measurement_lane: "gateway_observed",
+    scope: "skcounter.gateway.submit",
+  };
+  const gatewayClaims = claims();
+  gatewayClaims.subject = "skcounter:chiap08:skgateway";
+  gatewayClaims.capabilities = ["skcounter.gateway.submit"];
+  gatewayClaims.metadata.principal_id = "skgateway";
+  assert.doesNotThrow(() => authorize(gateway, gatewayClaims, gatewayConfig));
+
+  const wrongLane = structuredClone(gateway);
+  wrongLane.measurement_lane = "harness_reported";
+  assert.throws(() => authorize(wrongLane, gatewayClaims, gatewayConfig), (error) => error.code === "lane_denied");
 });
 
 test("collector rejects unknown fields, unsupported views, and hash tampering", () => {

@@ -10,5 +10,5 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/state/skcounter -%h/.skcapstone/pubsub -%h/.skcapstone/coordination/gtd -%h/.skcapstone/notifications
+ReadWritePaths=%h/.local/state/skcounter -%h/.skcapstone/fleet -%h/.skcapstone/pubsub -%h/.skcapstone/coordination/gtd -%h/.skcapstone/notifications
 UMask=0077

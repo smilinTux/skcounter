@@ -58,8 +58,14 @@ def load_config(path: Path) -> dict[str, Any]:
         raise EdgeError("edge config is missing a required field")
     if not str(config["collector_url"]).startswith("https://"):
         raise EdgeError("collector_url must use HTTPS")
-    if config.get("scope", "skcounter.report.submit") != "skcounter.report.submit":
-        raise EdgeError("edge scope is not allowed")
+    scope = config.get("scope", "skcounter.report.submit")
+    lane = config.get("measurement_lane", "harness_reported")
+    allowed_bindings = {
+        "skcounter.report.submit": "harness_reported",
+        "skcounter.gateway.submit": "gateway_observed",
+    }
+    if allowed_bindings.get(scope) != lane:
+        raise EdgeError("edge scope and measurement lane are not allowed")
     if not SAFE_ID.fullmatch(str(config["node_id"])) or not SAFE_ID.fullmatch(str(config["principal_id"])):
         raise EdgeError("edge node or principal is invalid")
     if config["subject"] != f"skcounter:{config['node_id']}:{config['principal_id']}":
@@ -76,7 +82,7 @@ def _mint_wire_token(config: dict[str, Any]) -> str:
             Path(config["capauth_home"]),
             str(config["subject"]),
             "skcounter",
-            ["skcounter.report.submit"],
+            [str(config.get("scope", "skcounter.report.submit"))],
             ttl_hours=1,
             metadata={
                 "node_id": str(config["node_id"]),
@@ -92,6 +98,8 @@ def _mint_wire_token(config: dict[str, Any]) -> str:
 
 
 def _collect(config: dict[str, Any], outbox: Path) -> None:
+    if config.get("measurement_lane", "harness_reported") != "harness_reported":
+        raise EdgeError("local harness collection is not allowed for this lane")
     command = [str(config["skcounter_bin"]), "collect", "--output-dir", str(outbox)]
     if config.get("since"):
         command.extend(["--since", str(config["since"])])
@@ -145,6 +153,8 @@ def _post(
 ) -> dict[str, Any]:
     if observation.get("node_id") != config["node_id"] or observation.get("principal_id") != config["principal_id"]:
         raise EdgeError("outbox observation identity does not match edge config")
+    if observation.get("measurement_lane") != config.get("measurement_lane", "harness_reported"):
+        raise EdgeError("outbox observation lane does not match edge config")
     idempotency_key = observation.get("idempotency_key")
     if not isinstance(idempotency_key, str) or len(idempotency_key) != 64:
         raise EdgeError("outbox observation idempotency key is invalid")

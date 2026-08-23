@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 5 ]; then
-  printf '%s\n' "Usage: provision-edge-identity.sh CAPAUTH_HOME GNUPGHOME NODE_ID PRINCIPAL_ID PUBLIC_KEY_OUTPUT" >&2
+if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+  printf '%s\n' "Usage: provision-edge-identity.sh CAPAUTH_HOME GNUPGHOME NODE_ID PRINCIPAL_ID PUBLIC_KEY_OUTPUT [SCOPE]" >&2
   exit 2
 fi
 
@@ -11,7 +11,16 @@ gnupg_home=$2
 node_id=$3
 principal_id=$4
 public_key_output=$5
+scope=${6:-skcounter.report.submit}
 subject="skcounter:${node_id}:${principal_id}"
+
+case "$scope" in
+  skcounter.report.submit|skcounter.gateway.submit) ;;
+  *)
+    printf 'Unsupported SKCounter identity scope: %s\n' "$scope" >&2
+    exit 2
+    ;;
+esac
 
 umask 077
 mkdir -p "$capauth_home/identity" "$capauth_home/security" "$gnupg_home" "$(dirname -- "$public_key_output")"
@@ -30,8 +39,8 @@ if ! printf '%s' "$fingerprint" | grep -Eq '^[A-F0-9]{40}$'; then
 fi
 
 identity_tmp="$capauth_home/identity/.identity.json.tmp"
-printf '{"fingerprint":"%s","subject":"%s","purpose":"skcounter.report.submit"}\n' \
-  "$fingerprint" "$subject" > "$identity_tmp"
+printf '{"fingerprint":"%s","subject":"%s","purpose":"%s"}\n' \
+  "$fingerprint" "$subject" "$scope" > "$identity_tmp"
 chmod 600 "$identity_tmp"
 mv -f "$identity_tmp" "$capauth_home/identity/identity.json"
 gpg --homedir "$gnupg_home" --batch --armor --export "$fingerprint" > "$public_key_output"

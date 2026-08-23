@@ -85,7 +85,8 @@ def main() -> int:
             return _fail("token_verification")
         if not _signature_matches_issuer(token):
             return _fail("token_verification")
-        if not has_scope(token, "skcounter.report.submit"):
+        allowed_scopes = ("skcounter.report.submit", "skcounter.gateway.submit")
+        if not any(has_scope(token, scope) for scope in allowed_scopes):
             return _fail("token_scope")
     except Exception:
         return _fail("token_verification")

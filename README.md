@@ -31,9 +31,11 @@ Version 0.2.0 ships:
 - Observable per-user systemd scheduling definitions with a 15 minute interval and up to 2 minutes of randomized delay.
 - A policy that blocks upstream submission, autosubmit, login, credential operations, remote synchronization, subprocess capture, LLM summarization, the upstream TUI, and unknown commands.
 - Per-user deployment and rollback tooling for eligible harness nodes.
+- SKCapstone Fleet CronJob status for package, backend, timer, result, private outbox depth, and last acknowledgement.
+- A loopback-only SKGateway aggregate adapter on `chiap01` using the dedicated `gateway_observed` lane and capability.
 - A read-only SKDashboard projection under `Economy > AI Usage`.
 
-The SKGateway adapter remains a separately governed task and will use the `gateway_observed` lane. SKCounter does not centrally pull or store raw harness sessions.
+SKCounter does not centrally pull or store raw harness sessions. The SKGateway adapter reads only the gateway's privacy-safe local token API and never receives prompts, responses, credentials, or request bodies.
 
 ## Usage
 
@@ -63,7 +65,7 @@ Install the passive package on every approved harness-capable node. Activate col
 
 An enabled edge timer normally produces a central acknowledgement within 17 minutes: the 15 minute interval plus up to 2 minutes of randomized delay, followed by collection time. The first run is scheduled five minutes after activation. An on-demand run can report immediately with `systemctl --user start skcounter-edge.service`.
 
-SKGateway emits a separate `gateway_observed` measurement lane. The dashboard never sums it with `harness_reported` by default because one request can appear in both.
+The `chiap01` SKGateway adapter emits a separate `gateway_observed` measurement lane every 15 minutes. The dashboard never sums it with `harness_reported` by default because one request can appear in both.
 
 ## Provider replacement
 
@@ -89,8 +91,8 @@ Provider-specific behavior lives in `src/providers/`. A replacement backend must
 
 - **Depends on:** [Tokscale](https://github.com/junhoyeo/tokscale), the pinned initial local scanner backend.
 - **Used by:** [SKDashboard](https://github.com/smilinTux/skdashboard), which projects aggregate observations in the Economy workspace.
-- **Integrates with:** [SKCapstone](https://github.com/smilinTux/skcapstone), which owns fleet coordination, health, and future deployment evidence.
-- **Integrates with:** [SKGateway](https://github.com/smilinTux/skgateway), which will emit a separate gateway measurement lane.
+- **Integrates with:** [SKCapstone](https://github.com/smilinTux/skcapstone), which owns fleet coordination, health, and deployment evidence.
+- **Integrates with:** [SKGateway](https://github.com/smilinTux/skgateway), which supplies privacy-safe local aggregates for the separate gateway measurement lane.
 - **Standards:** [sk-standards](https://github.com/smilinTux/sk-standards), the canonical repository documentation, testing, scheduling, and service standards.
 
 ## License
