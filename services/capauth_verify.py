@@ -7,7 +7,9 @@ import base64
 import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -19,6 +21,49 @@ def _fail(reason: str) -> int:
     return 1
 
 
+def _signature_matches_issuer(token: object) -> bool:
+    """Pin a valid detached signature to the token's declared issuer."""
+    signature = getattr(token, "signature", None)
+    payload = getattr(token, "payload", None)
+    issuer = str(getattr(payload, "issuer", "") or "").strip().upper()
+    if not signature or not issuer or issuer == "UNKNOWN":
+        return False
+    try:
+        with tempfile.TemporaryDirectory(prefix="skcounter-capauth-") as temporary:
+            root = Path(temporary)
+            data_path = root / "payload.json"
+            signature_path = root / "payload.sig"
+            data_path.write_text(payload.model_dump_json(), encoding="utf-8")
+            signature_path.write_text(signature, encoding="utf-8")
+            result = subprocess.run(
+                [
+                    "gpg",
+                    "--batch",
+                    "--quiet",
+                    "--status-fd",
+                    "1",
+                    "--verify",
+                    str(signature_path),
+                    str(data_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+    except Exception:
+        return False
+    if result.returncode != 0:
+        return False
+    for line in result.stdout.splitlines():
+        if not line.startswith("[GNUPG:] VALIDSIG "):
+            continue
+        fingerprints = [part.upper() for part in line.split()[2:] if len(part) == 40]
+        if issuer in fingerprints:
+            return True
+    return False
+
+
 def main() -> int:
     logging.disable(logging.CRITICAL)
     wire = sys.stdin.buffer.read(MAX_WIRE_BYTES + 1)
@@ -28,7 +73,7 @@ def main() -> int:
     try:
         padding = b"=" * (-len(wire.strip()) % 4)
         token_json = base64.urlsafe_b64decode(wire.strip() + padding).decode("utf-8")
-        from capauth.tokens import has_scope, import_token, signature_verifies, verify_audience_token
+        from capauth.tokens import has_scope, import_token, verify_audience_token
 
         token = import_token(token_json)
     except Exception:
@@ -38,7 +83,7 @@ def main() -> int:
     try:
         if not verify_audience_token(token, "skcounter", home=capauth_home):
             return _fail("token_verification")
-        if not signature_verifies(token):
+        if not _signature_matches_issuer(token):
             return _fail("token_verification")
         if not has_scope(token, "skcounter.report.submit"):
             return _fail("token_scope")
