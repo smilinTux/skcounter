@@ -1,37 +1,36 @@
 # SKCounter
 
-SKCounter is the SK fleet's governed token usage accounting facade. It gives operators one stable `skcounter` command and one stable reporting contract while allowing the underlying scanner to be replaced.
+**SKCounter is the governed, provider-neutral AI usage accounting facade for the SK fleet.** It gives harness users and operators one stable command and aggregate contract while allowing the scanner backend to be replaced.
+**Maturity tier:** T0 - N/A, no key material. **Version phase:** Incubating. **Current version:** 0.1.0.
 
-The initial backend is [Tokscale](https://github.com/junhoyeo/tokscale), pinned to version 4.13.0. Tokscale remains separately attributed under its MIT license.
+The initial backend is [Tokscale](https://github.com/junhoyeo/tokscale), pinned to version 4.13.0. Tokscale remains separately attributed under its MIT license. SKCounter original code is Apache-2.0 licensed.
 
-## Current behavior
-
-- Scans local AI coding harness stores through the pinned backend.
-- Presents the product as `skcounter` at the command and policy boundary.
-- Defaults model, monthly, and hourly views to static output rather than the upstream TUI.
-- Blocks social submission, autosubmit, upstream account operations, credential operations, remote synchronization, subprocess capture, LLM summarization, and unknown backend commands.
-- Isolates backend settings beneath `~/.config/skcounter/providers/` so an existing Tokscale autosubmit setting is not inherited.
-- Redirects the upstream social API to loopback as a second policy layer.
-
-Normal local reports can fetch public pricing catalogs. The allowed reporting commands do not intentionally submit local session data. The fleet design adds an SK-owned aggregate reporting path rather than using Tokscale's public social service.
-
-## Install from this checkout
+## Quickstart
 
 Requirements are Node.js 20 or newer and npm.
 
 ```bash
-npm ci
+npm ci --ignore-scripts
 npm test
 ./scripts/install-user.sh
+skcounter doctor
 ```
 
-The installer places `skcounter` in `${SKCOUNTER_PREFIX:-$HOME/.local}/bin`. Add that directory to `PATH` if needed.
+The installer places `skcounter` in `${SKCOUNTER_PREFIX:-$HOME/.local}/bin`. It runs as the harness user and never requires root access.
 
-To remove the user-level command while preserving local configuration:
+## Current release boundary
 
-```bash
-./scripts/uninstall-user.sh
-```
+Version 0.1.0 ships:
+
+- A stable `skcounter` command and replaceable backend interface.
+- Local Codex, Claude, OpenCode, and other supported harness discovery.
+- Governed local reports and normalized `skcounter.snapshot.v1` aggregate snapshots.
+- A private append-only local observation store.
+- A policy that blocks upstream submission, autosubmit, login, credential operations, remote synchronization, subprocess capture, LLM summarization, the upstream TUI, and unknown commands.
+- A chiap08 user-level canary.
+- A read-only SKDashboard projection under `Economy > AI Usage`.
+
+Version 0.1.0 does not ship the network collector, CapAuth report capability, fleet timers, or SKGateway adapter. Those remain separately governed deployment tasks.
 
 ## Usage
 
@@ -40,45 +39,55 @@ skcounter
 skcounter models --json
 skcounter monthly --since 2026-08-01
 skcounter clients --json
+skcounter snapshot --since 2026-08-01
+skcounter collect --since 2026-08-01
 skcounter report --full
 skcounter doctor
 skcounter backend
 ```
 
-`skcounter report` always adds `--no-summarize`. A denied command exits with status 2. Backend failures exit with the backend status or status 1.
+`skcounter report` always adds `--no-summarize`. A policy denial exits with status 2. A collection or backend failure exits with status 1 or the backend status.
 
-## Cluster design
+## Security boundary
 
-Install the passive package on every cluster node that is allowed to host a coding harness. Activate collection once per authorized harness user, not once per machine as root. Nodes without local harness stores report healthy but empty discovery and consume negligible resources.
+Harness stores can contain sensitive prompts, responses, source code, paths, and credentials. SKCounter scans only stores owned by the current operating-system user. The normalized snapshot excludes raw prompt and response content, source paths, workspace paths, raw session identifiers, tool arguments, and credentials.
 
-Usage data follows an edge-push design:
+Normal local reports may fetch public pricing metadata. Provider subscription quota calls and upstream social reporting are blocked. Backend configuration is isolated under `~/.config/skcounter/providers/`.
 
-```text
-local harness stores
-        |
-        v
-per-user SKCounter collector
-        |
-        v
-local durable outbox
-        |
-        v
-CapAuth protected collector on chiap04
-        |
-        v
-append-only observations and aggregate projections
-```
+## Cluster architecture
 
-SKGateway reports inference-observed usage through a separate adapter and measurement lane. Central projections must not blindly sum harness-reported and gateway-observed records because the same request can appear in both.
+Install the passive package on every approved harness-capable node. Activate collection once per authorized harness principal, never once per machine as root. Edge collectors push normalized aggregates to the planned chiap04 collector. Central systems pull only version and health state.
 
-Central infrastructure pulls collector health and version state through SKCapstone Fleet. It does not pull session files over SSH, network mounts, or shared storage.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/ROLLOUT.md](docs/ROLLOUT.md), and [docs/SECURITY.md](docs/SECURITY.md).
+SKGateway emits a separate `gateway_observed` measurement lane. The dashboard never sums it with `harness_reported` by default because one request can appear in both.
 
 ## Provider replacement
 
-Provider-specific resolution and execution live in `src/providers/`. A replacement backend must satisfy the facade tests and emit the normalized snapshot contract in `schemas/skcounter.snapshot.v1.schema.json`. Fleet callers do not invoke `tokscale` directly.
+Provider-specific behavior lives in `src/providers/`. A replacement backend must pass the facade tests and emit `schemas/skcounter.snapshot.v1.schema.json`. Fleet callers never invoke Tokscale directly.
 
-## Project status
+## Documentation
 
-Version 0.1.0 contains the local facade and Tokscale adapter. The signed push collector, central ingestion API, durable projection store, and fleet timers are architecture contracts for later governed tasks. They are not activated by this repository bootstrap.
+- [SOP.md](./SOP.md): canonical build, test, release, deployment, rollback, and troubleshooting procedures.
+- [Architecture](./docs/ARCHITECTURE.md): fleet placement, data flow, privacy boundaries, and measurement semantics.
+- [Rollout](./docs/ROLLOUT.md): staged central collector and fleet activation plan.
+- [Security policy](./SECURITY.md): reporting, supported versions, and repository threat boundary.
+- [Technical security model](./docs/SECURITY.md): local stores, CapAuth, collection, and supply-chain controls.
+- [Snapshot schema](./schemas/skcounter.snapshot.v1.schema.json): provider-neutral aggregate contract.
+- [Contributing](./CONTRIBUTING.md) and [changelog](./CHANGELOG.md).
+
+## Standards posture
+
+**Observability and scheduling:** version 0.1.0 ships no scheduled job. Any future collector timer must be wrapped with a run ledger, failure capture, alerting, and on-demand status in conformance with the [Observability and Scheduling Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/OBSERVABILITY_AND_SCHEDULING_STANDARD.md).
+
+**Service units:** N/A for version 0.1.0 because the repository ships no long-running systemd unit. Any future network collector must conform to the [Service Unit Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/SERVICE_UNIT_STANDARD.md).
+
+## Related projects / See also
+
+- **Depends on:** [Tokscale](https://github.com/junhoyeo/tokscale), the pinned initial local scanner backend.
+- **Used by:** [SKDashboard](https://github.com/smilinTux/skdashboard), which projects aggregate observations in the Economy workspace.
+- **Integrates with:** [SKCapstone](https://github.com/smilinTux/skcapstone), which owns fleet coordination, health, and future deployment evidence.
+- **Integrates with:** [SKGateway](https://github.com/smilinTux/skgateway), which will emit a separate gateway measurement lane.
+- **Standards:** [sk-standards](https://github.com/smilinTux/sk-standards), the canonical repository documentation, testing, scheduling, and service standards.
+
+## License
+
+SKCounter original code is licensed under Apache-2.0. Tokscale remains licensed under MIT and is reproduced only with the attribution in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).

@@ -1,5 +1,7 @@
 # Fleet rollout
 
+The canonical release, canary install, rollback, and exposure procedures are in [SOP.md section 5](../SOP.md). This document governs the later staged activation of central reporting and fleet timers.
+
 ## Gates
 
 Fleet-wide activation requires separate reviewed work for the central collector, CapAuth report capability, normalized snapshot generator, node outbox, user timers, retention, rollback, and monitoring. The local 0.1.0 facade does not satisfy those production gates by itself.

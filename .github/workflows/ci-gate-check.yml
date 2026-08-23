@@ -1,0 +1,12 @@
+name: ci-gate-check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci-gates:
+    uses: smilinTux/sk-standards/.github/workflows/ci-gate-check.yml@main
