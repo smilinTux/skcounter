@@ -2,8 +2,8 @@
 set -euo pipefail
 
 role=${1:-}
-if [ "$role" != "edge" ] && [ "$role" != "collector" ] && [ "$role" != "all" ]; then
-  printf '%s\n' "Usage: install-runtime.sh edge|collector|all" >&2
+if [ "$role" != "edge" ] && [ "$role" != "collector" ] && [ "$role" != "gateway" ] && [ "$role" != "all" ]; then
+  printf '%s\n' "Usage: install-runtime.sh edge|collector|gateway|all" >&2
   exit 2
 fi
 
@@ -18,6 +18,7 @@ install -m 0644 "$repo_root"/src/*.mjs "$runtime_root/src/"
 install -m 0755 "$repo_root/services/collector.mjs" "$runtime_root/services/collector.mjs"
 install -m 0755 "$repo_root/services/capauth_verify.py" "$runtime_root/services/capauth_verify.py"
 install -m 0755 "$repo_root/edge/skcounter_edge.py" "$runtime_root/edge/skcounter_edge.py"
+install -m 0755 "$repo_root/edge/skcounter_fleet.py" "$runtime_root/edge/skcounter_fleet.py"
 install -m 0755 "$repo_root/edge/skcounter_schedule.py" "$runtime_root/edge/skcounter_schedule.py"
 install -m 0755 "$repo_root/edge/run-edge.sh" "$runtime_root/edge/run-edge.sh"
 install -m 0644 "$repo_root/edge/__init__.py" "$runtime_root/edge/__init__.py"
@@ -28,6 +29,12 @@ fi
 if [ "$role" = "edge" ] || [ "$role" = "all" ]; then
   install -m 0644 "$repo_root/deploy/systemd/skcounter-edge.service" "$unit_root/skcounter-edge.service"
   install -m 0644 "$repo_root/deploy/systemd/skcounter-edge.timer" "$unit_root/skcounter-edge.timer"
+fi
+if [ "$role" = "gateway" ] || [ "$role" = "all" ]; then
+  install -m 0755 "$repo_root/edge/skcounter_gateway.py" "$runtime_root/edge/skcounter_gateway.py"
+  install -m 0755 "$repo_root/edge/run-gateway.sh" "$runtime_root/edge/run-gateway.sh"
+  install -m 0644 "$repo_root/deploy/systemd/skcounter-gateway.service" "$unit_root/skcounter-gateway.service"
+  install -m 0644 "$repo_root/deploy/systemd/skcounter-gateway.timer" "$unit_root/skcounter-gateway.timer"
 fi
 
 systemctl --user daemon-reload
