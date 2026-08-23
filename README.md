@@ -1,7 +1,7 @@
 # SKCounter
 
 **SKCounter is the governed, provider-neutral AI usage accounting facade for the SK fleet.** It gives harness users and operators one stable command and aggregate contract while allowing the scanner backend to be replaced.
-**Maturity tier:** T0 - N/A, no key material. **Version phase:** Incubating. **Current version:** 0.1.0.
+**Maturity tier:** T0 - Classical on the CapAuth signing and HTTPS transport surfaces. **Version phase:** Incubating. **Current version:** 0.2.0.
 
 The initial backend is [Tokscale](https://github.com/junhoyeo/tokscale), pinned to version 4.13.0. Tokscale remains separately attributed under its MIT license. SKCounter original code is Apache-2.0 licensed.
 
@@ -20,17 +20,20 @@ The installer places `skcounter` in `${SKCOUNTER_PREFIX:-$HOME/.local}/bin`. It 
 
 ## Current release boundary
 
-Version 0.1.0 ships:
+Version 0.2.0 ships:
 
 - A stable `skcounter` command and replaceable backend interface.
 - Local Codex, Claude, OpenCode, and other supported harness discovery.
 - Governed local reports and normalized `skcounter.snapshot.v1` aggregate snapshots.
 - A private append-only local observation store.
+- A durable edge outbox with signed HTTPS push and idempotent acknowledgements.
+- A tailnet-only chiap04 collector with CapAuth issuer binding, replay control, append-only observations, projection outbox, health, metrics, and retention.
+- Observable per-user systemd scheduling definitions with a 15 minute interval and up to 2 minutes of randomized delay.
 - A policy that blocks upstream submission, autosubmit, login, credential operations, remote synchronization, subprocess capture, LLM summarization, the upstream TUI, and unknown commands.
-- A chiap08 user-level canary.
+- Per-user deployment and rollback tooling for eligible harness nodes.
 - A read-only SKDashboard projection under `Economy > AI Usage`.
 
-Version 0.1.0 does not ship the network collector, CapAuth report capability, fleet timers, or SKGateway adapter. Those remain separately governed deployment tasks.
+The SKGateway adapter remains a separately governed task and will use the `gateway_observed` lane. SKCounter does not centrally pull or store raw harness sessions.
 
 ## Usage
 
@@ -56,7 +59,9 @@ Normal local reports may fetch public pricing metadata. Provider subscription qu
 
 ## Cluster architecture
 
-Install the passive package on every approved harness-capable node. Activate collection once per authorized harness principal, never once per machine as root. Edge collectors push normalized aggregates to the planned chiap04 collector. Central systems pull only version and health state.
+Install the passive package on every approved harness-capable node. Activate collection once per authorized harness principal, never once per machine as root. Edge collectors push normalized aggregates to the chiap04 collector. Central systems pull only version and health state.
+
+An enabled edge timer normally produces a central acknowledgement within 17 minutes: the 15 minute interval plus up to 2 minutes of randomized delay, followed by collection time. The first run is scheduled five minutes after activation. An on-demand run can report immediately with `systemctl --user start skcounter-edge.service`.
 
 SKGateway emits a separate `gateway_observed` measurement lane. The dashboard never sums it with `harness_reported` by default because one request can appear in both.
 
@@ -76,9 +81,9 @@ Provider-specific behavior lives in `src/providers/`. A replacement backend must
 
 ## Standards posture
 
-**Observability and scheduling:** version 0.1.0 ships no scheduled job. Any future collector timer must be wrapped with a run ledger, failure capture, alerting, and on-demand status in conformance with the [Observability and Scheduling Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/OBSERVABILITY_AND_SCHEDULING_STANDARD.md).
+**Observability and Scheduling:** every scheduled edge run is wrapped with a private run ledger, failure capture, a critical SKCapstone alert, and on-demand edge status. It conforms to the [Observability and Scheduling Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/OBSERVABILITY_AND_SCHEDULING_STANDARD.md). The current SKCapstone GTD CLI records the adapter as `manual` while preserving a stable `cron:` source reference; a control-plane compatibility card tracks adding `cron` as a first-class source enum.
 
-**Service units:** N/A for version 0.1.0 because the repository ships no long-running systemd unit. Any future network collector must conform to the [Service Unit Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/SERVICE_UNIT_STANDARD.md).
+**Service units:** the collector is a Tier B leaf service with bounded restart backoff and a limiter; the edge job is a one-shot timer. Paths are stable under `~/.local/lib/skcounter`, stale units are removed during rollback, and state retention is bounded. This conforms to the [Service Unit Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/SERVICE_UNIT_STANDARD.md).
 
 ## Related projects / See also
 

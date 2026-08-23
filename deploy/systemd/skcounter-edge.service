@@ -1,0 +1,14 @@
+[Unit]
+Description=SKCounter private edge aggregate collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.skenv/bin/python3 %h/.local/lib/skcounter/edge/skcounter_schedule.py %h/.config/skcounter/edge.json
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/skcounter -%h/.skcapstone/pubsub -%h/.skcapstone/coordination/gtd -%h/.skcapstone/notifications
+UMask=0077

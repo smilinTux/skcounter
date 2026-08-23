@@ -1,0 +1,12 @@
+[Unit]
+Description=Run SKCounter every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+RandomizedDelaySec=2min
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

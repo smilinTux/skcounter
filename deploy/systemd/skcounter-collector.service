@@ -1,0 +1,23 @@
+[Unit]
+Description=SKCounter central aggregate collector
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/lib/skcounter/services/collector.mjs serve --config %h/.config/skcounter/collector.json
+Restart=on-failure
+RestartSec=5
+RestartSteps=8
+RestartMaxDelaySec=5min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/skcounter-collector
+UMask=0077
+
+[Install]
+WantedBy=default.target

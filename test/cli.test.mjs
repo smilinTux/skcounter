@@ -38,7 +38,7 @@ test("version identifies facade and backend", async () => {
   });
 
   assert.equal(code, 0);
-  assert.match(stdout, /^skcounter 0\.1\.0 \(backend fake 1\.2\.3\)/);
+  assert.match(stdout, /^skcounter 0\.2\.0 \(backend fake 1\.2\.3\)/);
 });
 
 test("governed arguments reach the selected backend", async () => {

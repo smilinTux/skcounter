@@ -4,9 +4,9 @@ SKCounter reads sensitive local AI harness stores to produce aggregate usage obs
 
 ## Current posture
 
-Version 0.1.0 is pre-1.0 and has not received an independent third-party security audit. Tests cover policy decisions, adapter behavior, normalization, private storage, and failure paths. Those tests do not prove the absence of implementation or dependency vulnerabilities.
+Version 0.2.0 is pre-1.0 and has not received an independent third-party security audit. Tests cover policy decisions, adapter behavior, normalization, private storage, signed delivery, schema denial, identity binding, replay, duplicate handling, and failure paths. Those tests do not prove the absence of implementation or dependency vulnerabilities.
 
-SKCounter is not a cryptographic component. It creates SHA-256 content digests for idempotency and integrity indexing but owns no signing keys, encryption keys, capability tokens, or transport protocol.
+SKCounter is a T0 Classical cryptographic component on its reporting surfaces. It provisions isolated Ed25519 service identities, delegates short-lived capability signing and verification to CapAuth, requires TLS 1.2 or newer, and creates SHA-256 content digests. The exact surface inventory and current limitations are in [docs/crypto-architecture.md](./docs/crypto-architecture.md).
 
 ## Threat model summary
 
@@ -30,13 +30,15 @@ Harness stores may contain:
 - An observation written with permissions broader than user-only.
 - An adapter replacement that bypasses the facade policy or changes the stable snapshot contract silently.
 - A dependency or packaging change that removes Tokscale attribution or weakens the exact version pin.
+- Acceptance of an unsigned, expired, revoked, wrong-audience, over-scoped, untrusted, replayed, identity-mismatched, malformed, oversized, or clock-skewed central report.
+- Capability-token or private-key disclosure through process arguments, logs, acknowledgements, fixtures, or central observations.
 
 ### Out of scope
 
 - Vulnerabilities in Tokscale itself. Report upstream and notify SKCounter maintainers so the dependency can be assessed and pinned forward.
-- Provider billing accuracy. Version 0.1.0 costs are estimates tied to the reported pricing revision.
+- Provider billing accuracy. Costs are estimates tied to the reported pricing revision.
 - Source harness retention and access controls. The source harness owns its files.
-- The planned central collector, CapAuth report capability, fleet timers, and SKGateway adapter until those components are implemented in separately reviewed tasks.
+- The planned SKGateway adapter until it is implemented in its separately reviewed task.
 - A local attacker who already controls the same operating-system user and can directly read that user's harness stores.
 
 ## Enforced controls
@@ -50,6 +52,10 @@ Harness stores may contain:
 - Local observations are appended exclusively beneath mode `0700` directories with mode `0600` files.
 - Harness and gateway measurement lanes remain distinct.
 - The backend package and lockfile integrity are committed and checked in CI.
+- The collector binds each trusted CapAuth issuer to one exact subject, node, and principal.
+- The collector accepts only HTTPS, one report scope, bounded clock skew, privacy-safe views, and a one MiB body.
+- Edge outboxes, service keyrings, central observations, acknowledgements, replay records, and projection outboxes use user-only permissions.
+- Accepted observations are immutable, acknowledgements are idempotent, and duplicate requests do not inflate totals.
 
 Normal allowed reports may fetch public pricing metadata. Production egress policy should constrain that destination at the host network boundary. SKCounter does not claim that a local report is fully offline.
 
@@ -65,7 +71,7 @@ Never place credentials, capability tokens, cookies, API keys, harness content, 
 - Command arguments visible through process listings.
 - Snapshot fixtures or documentation examples.
 
-Future network reporting must source its CapAuth identity from approved custody, send only normalized snapshots, and fail closed when policy verification is unavailable.
+Network reporting sources its CapAuth identity from isolated operating-system user custody, sends only normalized snapshots, and fails closed when policy verification is unavailable. Never paste a portable token or service private key into a shell command.
 
 ## Dependency and release posture
 
@@ -83,11 +89,11 @@ Future network reporting must source its CapAuth identity from approved custody,
 
 | Version | Supported |
 | --- | --- |
-| Latest tagged `0.1.x` | Yes |
+| Latest tagged `0.2.x` | Yes |
 | Untagged development commits | Best effort |
 | Older lines | No |
 
-Until 1.0, security fixes target the latest tagged 0.1.x release. Upgrade to the latest tag before reporting a version-specific issue.
+Until 1.0, security fixes target the latest tagged 0.2.x release. Upgrade to the latest tag before reporting a version-specific issue.
 
 ## Reporting a vulnerability
 
@@ -105,3 +111,5 @@ Good-faith security research performed under coordinated disclosure will not be 
 ## Standards
 
 This policy follows the [SK Security Disclosure Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/SECURITY_DISCLOSURE_STANDARD.md), ISO/IEC 29147 and 30111 disclosure practices, and CVSS v4.0 for severity assessment.
+
+For cryptographic surfaces, SKCounter follows the [SK Cryptography Standard](https://github.com/smilinTux/sk-standards/blob/main/standards/CRYPTOGRAPHY_STANDARD.md) honest-claim rules. Version 0.2.0 is T0 Classical and does not claim hybrid or post-quantum protection.

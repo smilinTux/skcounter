@@ -27,7 +27,7 @@ Installing a passive package fleet-wide prevents a coverage gap when a Codex har
 3. The SKCounter adapter removes source paths, workspace paths, session identifiers, prompt text, response text, tool arguments, and credentials.
 4. The adapter creates a canonical snapshot using `skcounter.snapshot.v1`.
 5. The node appends the canonical payload to a local outbox before transmission.
-6. The node signs the payload under a CapAuth identity with only `skcounter.report` authority.
+6. The node mints a one-hour CapAuth token with only `skcounter.report.submit` authority.
 7. The node pushes over a TLS tailnet route to the central collector.
 8. The collector verifies capability, node identity, schema, payload hash, size, time window, and replay state.
 9. The collector appends the observation and acknowledges its idempotency key.
@@ -86,7 +86,7 @@ The collector requires:
 
 ## Scheduling and offline operation
 
-Use a user-level systemd timer on Linux and WSL, with a 15 minute interval and randomized delay. Use a per-user scheduled task on native Windows. The collector should finish quickly and exit rather than remain resident.
+Use a user-level systemd timer on Linux and WSL, with a 15 minute interval and up to two minutes of randomized delay. Use a per-user scheduled task on native Windows. The edge collector should finish quickly and exit rather than remain resident.
 
 When the central service is unavailable, retain signed payloads in a mode 0700 user-state outbox. Retry with bounded exponential backoff. Start with a seven-day operational retention target, then confirm it through a dedicated data-retention decision before production activation.
 

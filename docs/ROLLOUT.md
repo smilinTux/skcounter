@@ -4,14 +4,14 @@ The canonical release, canary install, rollback, and exposure procedures are in 
 
 ## Gates
 
-Fleet-wide activation requires separate reviewed work for the central collector, CapAuth report capability, normalized snapshot generator, node outbox, user timers, retention, rollback, and monitoring. The local 0.1.0 facade does not satisfy those production gates by itself.
+Fleet-wide activation proceeds through separate reviewed work for the central collector and the eligible-node timer rollout. Version 0.2.0 supplies the collector, CapAuth report capability, normalized snapshot generator, node outbox, user timers, retention, rollback, and monitoring surfaces. Activation still requires the matching SKCapstone card and per-node evidence.
 
 ## Recommended sequence
 
 1. Complete the `chiap08` local command canary with outbound submission blocked.
 2. Implement and test snapshot normalization with synthetic session fixtures.
-3. Implement the append-only collector on `chiap04` with synthetic reports only.
-4. Qualify CapAuth allow, deny, expiry, revocation, replay, malformed payload, oversize payload, collector outage, and clock-skew behavior.
+3. Qualify the append-only collector on `chiap04` with synthetic reports only.
+4. Qualify CapAuth allow, deny, expiry, revocation, replay, malformed payload, oversize payload, collector outage, clock-skew, retention, monitoring, and rollback behavior.
 5. Activate one `chiap08` user timer and observe local scan duration, CPU, disk, outbox, and exact central totals.
 6. Add one `chiap04` operator user to prove a second node and principal.
 7. Add one WSL workstation to prove offline queueing and resume behavior.
@@ -19,6 +19,10 @@ Fleet-wide activation requires separate reviewed work for the central collector,
 9. Activate per-user timers only where harness discovery or an explicit eligibility declaration exists.
 10. Add the SKGateway adapter as a separate measurement lane.
 11. Compare harness and gateway lanes without combining them, then define any correlation projection separately.
+
+## Expected freshness
+
+An enabled timer starts after five minutes and then runs every 15 minutes with up to two minutes of randomized delay. Under normal collector and network health, the dashboard should receive the first acknowledgement within seven minutes of activation and later data within 17 minutes of the preceding run. Collection duration adds to those bounds. An on-demand `systemctl --user start skcounter-edge.service` bypasses the timer wait.
 
 ## Rollback
 

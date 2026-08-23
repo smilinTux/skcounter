@@ -8,13 +8,13 @@ Harness stores can contain prompts, responses, tool calls, file paths, repositor
 
 Run SKCounter with the same operating-system identity that owns the harness store. Do not grant a central service SSH access, shared-home access, or root traversal to collect usage. Backend configuration is isolated beneath the SKCounter configuration root so existing upstream autosubmit state is not inherited.
 
-Version 0.1.0 blocks known Tokscale commands that can submit usage, manage upstream accounts, manipulate credentials, perform remote synchronization, call subscription quota APIs, execute captured subprocesses, or launch the upstream TUI. It also redirects the upstream social API to loopback and fails closed on unknown top-level commands.
+Version 0.2.0 blocks known Tokscale commands that can submit usage, manage upstream accounts, manipulate credentials, perform remote synchronization, call subscription quota APIs, execute captured subprocesses, or launch the upstream TUI. It also redirects the upstream social API to loopback and fails closed on unknown top-level commands.
 
 The pinned backend may fetch public pricing metadata during allowed reports. This is not a session-data submission path, but production egress policy should still constrain destinations at the host network layer.
 
 ## Report capability
 
-A future reporting identity receives only the capability to create a bounded SKCounter snapshot for its exact node and principal. It cannot query other nodes, retrieve observations, change policy, dispatch model requests, or upload raw artifacts.
+A reporting identity receives only the capability to create a bounded SKCounter snapshot for its exact node and principal. It cannot query other nodes, retrieve observations, change policy, dispatch model requests, or upload raw artifacts.
 
 The collector verifies:
 
@@ -28,11 +28,15 @@ The collector verifies:
 - Allowed measurement lane.
 - Absence of prohibited raw-data fields.
 
+The deployed collector additionally restricts v1 to `models`, `daily`, `hourly`, and `time_metrics`. It denies the schema's optional workspace, session, task, and agent drilldowns until a separate privacy review authorizes their exact local derivation.
+
 ## Storage
 
 Local outboxes use user-only permissions. Central observations are append-only. Corrections create superseding observations and never rewrite accepted history. Derived projections use an outbox and can be rebuilt from observations.
 
 Do not store prompts, responses, tool input, tool output, session identifiers, workspace paths, source file paths, raw capability tokens, API keys, cookies, or OAuth material.
+
+The edge service key is a classical Ed25519 signing-only key in an isolated mode `0700` GnuPG home. It is noninteractive so the per-user timer can mint one-hour tokens. The collector stores only its public certificate and an exact issuer binding. See [crypto architecture](./crypto-architecture.md) for rotation and current T0 limitations.
 
 ## Supply chain
 
