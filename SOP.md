@@ -312,6 +312,7 @@ skcapstone fleet describe cronjob skcounter-edge-chiap01
 The gateway adapter runs only as the user that owns the active SKGateway process. Its token source must be loopback HTTP and its collector capability must be exactly `skcounter.gateway.submit`.
 
 ```bash
+./scripts/install-runtime.sh gateway
 ./scripts/provision-edge-identity.sh \
   "$HOME/.local/state/skcounter-gateway/capauth" \
   "$HOME/.local/state/skcounter-gateway/gnupg" \
