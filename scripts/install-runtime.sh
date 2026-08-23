@@ -19,6 +19,7 @@ install -m 0755 "$repo_root/services/collector.mjs" "$runtime_root/services/coll
 install -m 0755 "$repo_root/services/capauth_verify.py" "$runtime_root/services/capauth_verify.py"
 install -m 0755 "$repo_root/edge/skcounter_edge.py" "$runtime_root/edge/skcounter_edge.py"
 install -m 0755 "$repo_root/edge/skcounter_schedule.py" "$runtime_root/edge/skcounter_schedule.py"
+install -m 0755 "$repo_root/edge/run-edge.sh" "$runtime_root/edge/run-edge.sh"
 install -m 0644 "$repo_root/edge/__init__.py" "$runtime_root/edge/__init__.py"
 
 if [ "$role" = "collector" ] || [ "$role" = "all" ]; then

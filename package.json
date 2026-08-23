@@ -11,6 +11,7 @@
     "bin",
     "src",
     "edge/*.py",
+    "edge/*.sh",
     "services/*.py",
     "services/*.mjs",
     "deploy/systemd",
