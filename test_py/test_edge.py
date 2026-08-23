@@ -29,10 +29,18 @@ class EdgeTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
+        ca_candidates = (
+            ssl.get_default_verify_paths().cafile,
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+        )
+        ca_file = next((candidate for candidate in ca_candidates if candidate and Path(candidate).is_file()), None)
+        if not ca_file:
+            self.skipTest("system CA bundle is unavailable")
         self.config = {
             "schema_version": "skcounter.edge.config.v1",
             "collector_url": "https://collector.test:9398/v1/observations",
-            "ca_file": ssl.get_default_verify_paths().cafile,
+            "ca_file": ca_file,
             "state_dir": str(self.root / "state"),
             "skcounter_bin": "/bin/false",
             "capauth_home": str(self.root / "capauth"),
