@@ -188,6 +188,79 @@ def _archive(path: Path, sent_root: Path, observation: dict[str, Any]) -> None:
     else:
         os.replace(path, destination)
         destination.chmod(0o600)
+    return destination
+
+
+def _update_latest_index(config: dict[str, Any], observation_path: Path, observation: dict[str, Any]) -> None:
+    """Update the latest observation index after successful delivery."""
+    index_path = Path(config["state_dir"]) / "latest-observation-index.jsonl"
+
+    # Derive index keys from the observation
+    keys = _derive_index_keys(observation)
+
+    # Read current index
+    current_index: dict[str, dict[str, Any]] = {}
+    if index_path.exists():
+        try:
+            for line in index_path.read_text(encoding="utf-8").strip().split("\n"):
+                if line:
+                    entry = json.loads(line)
+                    if entry.get("schema_version") == "skcounter.latest-observation-index.v1":
+                        key = entry["key"]
+                        # Keep only the latest entry per key
+                        if key not in current_index or entry["observed_at"] > current_index[key]["observed_at"]:
+                            current_index[key] = entry
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
+
+    # Update with new entries
+    sent_dir = Path(config["state_dir"]) / "sent"
+    for key in keys:
+        entry = {
+            "schema_version": "skcounter.latest-observation-index.v1",
+            "key": key,
+            "observation_path": str(observation_path.relative_to(sent_dir)),
+            "observed_at": observation["observed_at"],
+            "payload_hash": observation["payload_hash"],
+            "idempotency_key": observation["idempotency_key"],
+        }
+        if key not in current_index or entry["observed_at"] > current_index[key]["observed_at"]:
+            current_index[key] = entry
+
+    # Enforce 10,000 entry limit
+    if len(current_index) > 10000:
+        # Keep most recent by observed_at
+        sorted_entries = sorted(current_index.values(), key=lambda e: e["observed_at"], reverse=True)
+        current_index = {e["key"]: e for e in sorted_entries[:10000]}
+
+    # Write atomically
+    _write_index_atomically(index_path, current_index)
+
+
+def _derive_index_keys(observation: dict[str, Any]) -> list[str]:
+    """Derive index keys for an observation's aggregates."""
+    keys = []
+    lane = observation.get("measurement_lane", "unknown")
+    node = observation.get("node_id", "unknown")
+    principal = observation.get("principal_id", "unknown")
+
+    for agg in observation.get("aggregates", []):
+        view = agg.get("view", "unknown")
+        bucket = agg.get("bucket_start", "unknown")
+        key = f"{lane}:{node}:{principal}:{view}:{bucket}"
+        keys.append(key)
+
+    return keys
+
+
+def _write_index_atomically(index_path: Path, index_data: dict[str, dict[str, Any]]) -> None:
+    """Write index atomically using temp file then rename."""
+    tmp_path = index_path.with_name(f".{index_path.name}.{os.getpid()}.tmp")
+
+    lines = [json.dumps(entry, sort_keys=True, separators=(",", ":")) for entry in sorted(index_data.values(), key=lambda e: e["key"])]
+    tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp_path.chmod(0o600)
+    os.replace(tmp_path, index_path)
 
 
 def _prune(root: Path, days: int, now: datetime) -> int:
@@ -249,8 +322,14 @@ def run_once(
                 while True:
                     try:
                         _post(config, body, observation, token_minter=token_minter, opener=opener, now=now)
-                        _archive(path, sent, observation)
+                        archived_path = _archive(path, sent, observation)
                         acknowledged += 1
+                        # Successfully delivered and archived, now update index
+                        try:
+                            _update_latest_index(config, archived_path, observation)
+                        except Exception:
+                            # Index update failure is non-fatal; log but continue
+                            pass
                         break
                     except EdgeError:
                         if not delays:
