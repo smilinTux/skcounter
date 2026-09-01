@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import importlib.util
 import json
 import shutil
@@ -32,6 +33,10 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             Path(shutil.which("gpg") or "gpg"),
         )
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("capauth") is not None,
+        "full bundle qualification requires the CapAuth verifier dependency",
+    )
     def test_two_clean_builds_are_byte_identical_and_manifest_is_complete(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
