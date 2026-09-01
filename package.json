@@ -16,6 +16,7 @@
     "services/*.mjs",
     "deploy/systemd",
     "scripts/*.sh",
+    "scripts/*.py",
     "schemas",
     "docs",
     "LICENSE",
