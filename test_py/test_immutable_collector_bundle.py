@@ -104,7 +104,7 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 self.assertEqual(health["schema_version"], "skcounter.health.v1")
                 replay_script = """
 import { CollectorStore } from './services/collector.mjs';
-const store = new CollectorStore(process.argv[1], () => new Date('2026-09-01T00:00:00Z'));
+const store = new CollectorStore(process.argv[2], () => new Date('2026-09-01T00:00:00Z'));
 store.reserveReplay('11111111111111111111111111111111');
 try { store.reserveReplay('11111111111111111111111111111111'); process.exit(3); }
 catch (error) { if (error.code !== 'EEXIST') throw error; }
