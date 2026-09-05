@@ -126,7 +126,7 @@ export function validateSnapshot(snapshot, { allowedViews = ["models", "daily", 
   exactKeys(snapshot, SNAPSHOT_KEYS, required, "snapshot");
   if (snapshot.schema_version !== "skcounter.snapshot.v1") throw new RequestError(422, "unsupported_schema");
   if (!HEX64.test(snapshot.idempotency_key) || !HEX64.test(snapshot.payload_hash)) throw new RequestError(422, "invalid_schema", "snapshot hashes are invalid");
-  if (snapshot.measurement_lane !== "harness_reported") throw new RequestError(422, "lane_not_allowed");
+  if (!["harness_reported", "gateway_observed"].includes(snapshot.measurement_lane)) throw new RequestError(422, "lane_not_allowed");
   if (!SAFE_ID.test(snapshot.node_id) || !SAFE_ID.test(snapshot.principal_id)) throw new RequestError(422, "invalid_schema", "node or principal is invalid");
   exactKeys(snapshot.collector, COLLECTOR_KEYS, COLLECTOR_KEYS, "snapshot.collector");
   if (snapshot.collector.product !== "skcounter") throw new RequestError(422, "invalid_schema", "collector product is invalid");
@@ -269,7 +269,10 @@ export function authorize(snapshot, claims, config) {
   const trust = config.trusted_issuers[issuer];
   if (!trust || trust.enabled === false) throw new RequestError(403, "issuer_not_trusted");
   if (claims.audience !== "skcounter") throw new RequestError(403, "audience_denied");
-  if (!Array.isArray(claims.capabilities) || claims.capabilities.length !== 1 || claims.capabilities[0] !== "skcounter.report.submit") throw new RequestError(403, "scope_denied");
+  const expectedLane = trust.measurement_lane || "harness_reported";
+  const expectedScope = trust.scope || "skcounter.report.submit";
+  if (snapshot.measurement_lane !== expectedLane) throw new RequestError(403, "lane_denied");
+  if (!Array.isArray(claims.capabilities) || claims.capabilities.length !== 1 || claims.capabilities[0] !== expectedScope) throw new RequestError(403, "scope_denied");
   if (claims.subject !== trust.subject) throw new RequestError(403, "subject_mismatch");
   if (snapshot.node_id !== trust.node_id || snapshot.principal_id !== trust.principal_id) throw new RequestError(403, "identity_mismatch");
   if (claims.metadata?.node_id !== trust.node_id || claims.metadata?.principal_id !== trust.principal_id) throw new RequestError(403, "token_binding_mismatch");

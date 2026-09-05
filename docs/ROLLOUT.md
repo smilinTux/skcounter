@@ -2,11 +2,11 @@
 
 The canonical release, canary install, rollback, and exposure procedures are in [SOP.md section 5](../SOP.md). This document governs the later staged activation of central reporting and fleet timers.
 
-## Gates
+## Qualified baseline
 
-Fleet-wide activation proceeds through separate reviewed work for the central collector and the eligible-node timer rollout. Version 0.2.0 supplies the collector, CapAuth report capability, normalized snapshot generator, node outbox, user timers, retention, rollback, and monitoring surfaces. Activation still requires the matching SKCapstone card and per-node evidence.
+The 2026-08-23 version 0.2.0 rollout qualified the central collector, CapAuth report path, normalized snapshot generator, node outbox, user timers, retention, rollback, Fleet health projection, SKGateway adapter, and SKDashboard Economy projection. Active harness principals are `chiap01`, `chiap02`, `chiap03`, `chiap04`, `chiap08`, `chiap09`, `chiap10`, `chipv05`, and the `chiwk11` WSL distribution. New principals still require the matching SKCapstone card and per-node evidence.
 
-## Recommended sequence
+## Sequence used for the qualified baseline
 
 1. Complete the `chiap08` local command canary with outbound submission blocked.
 2. Implement and test snapshot normalization with synthetic session fixtures.
@@ -17,8 +17,8 @@ Fleet-wide activation proceeds through separate reviewed work for the central co
 7. Add one WSL workstation to prove offline queueing and resume behavior.
 8. Install the passive package across remaining in-scope nodes.
 9. Activate per-user timers only where harness discovery or an explicit eligibility declaration exists.
-10. Add the SKGateway adapter as a separate measurement lane.
-11. Compare harness and gateway lanes without combining them, then define any correlation projection separately.
+10. Add the loopback SKGateway adapter with its own identity and `skcounter.gateway.submit` capability.
+11. Confirm SKDashboard exposes both lanes and selects only one lane for each projection.
 
 ## Expected freshness
 
@@ -47,3 +47,5 @@ Stop the active wave on any raw transcript egress, credential output, cross-user
 - CPU, memory, scan duration, and outbox size.
 - Disable and uninstall commands.
 - Linked SKCapstone card and CMDB update.
+
+Fleet status is available through `skcapstone fleet describe cronjob skcounter-edge-NODE`. The separate gateway object is `skcounter-gateway-chiap01`.

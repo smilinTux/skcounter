@@ -34,6 +34,8 @@ Installing a passive package fleet-wide prevents a coverage gap when a Codex har
 10. The node removes an acknowledged outbox entry according to retention policy.
 11. Central projections select the latest valid snapshot for each measurement key.
 
+The SKGateway path runs independently on `chiap01`. A loopback-only adapter reads `/api/tokens`, normalizes daily agent, model, backend, token, and request aggregates, and submits them with `skcounter.gateway.submit`. Its service identity is distinct from the harness principal. The collector binds that capability to `gateway_observed` and rejects lane substitution.
+
 ## Snapshot semantics
 
 Tokscale primarily produces cumulative views over time windows. Treat edge reports as observations, not blindly additive events.
@@ -52,7 +54,7 @@ Optional session and workspace drilldowns use node-scoped HMAC keys, never raw i
 
 ## Measurement lanes
 
-`harness_reported` is derived from local coding-harness session stores. `gateway_observed` is derived from SKGateway request and provider accounting. A third lane can be added for provider billing reconciliation.
+`harness_reported` is derived from local coding-harness session stores. `gateway_observed` is derived from the privacy-safe SKGateway token API on the gateway host. A third lane can be added for provider billing reconciliation.
 
 Keep lanes separately queryable. The same Codex harness request can appear at the harness and gateway. Cross-lane totals require a documented correlation rule and must never be summed by default.
 
@@ -92,15 +94,16 @@ When the central service is unavailable, retain signed payloads in a mode 0700 u
 
 ## Fleet control
 
-SKCapstone Fleet owns package version, eligibility labels, timer presence, last collection result, outbox depth, and last acknowledged report time. Fleet health polling does not grant access to session content.
+SKCapstone Fleet owns package version, eligibility labels, timer presence, last collection result, outbox depth, and last acknowledged report time. Each scheduled principal writes only its own CronJob status. Fleet health polling does not grant access to session content.
 
 Recommended eligibility labels are:
 
 ```text
-skcounter.package=present
+skcounter.package=0.2.0
 skcounter.harness-capable=true
 skcounter.collector=per-user
 skcounter.schema=v1
+skcounter.timer=enabled
 ```
 
 ## Provider replacement

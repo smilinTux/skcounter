@@ -1,0 +1,14 @@
+[Unit]
+Description=SKCounter privacy-safe SKGateway aggregate adapter
+After=network-online.target skgateway-codex.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/lib/skcounter/edge/run-gateway.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/skcounter-gateway -%h/.skcapstone/fleet -%h/.skcapstone/pubsub -%h/.skcapstone/coordination/gtd -%h/.skcapstone/notifications
+UMask=0077

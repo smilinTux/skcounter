@@ -14,7 +14,7 @@ Version 0.2.0 explicitly does not own:
 - Model routing or inference authorization.
 - Provider billing truth or subscription quotas.
 - Joule balances or Autopilot settlements.
-- SKGateway request accounting or the future `gateway_observed` adapter.
+- SKGateway request accounting internals. SKCounter owns only the privacy-safe `gateway_observed` adapter and projection contract.
 - Root-level or cross-user session discovery.
 
 The initial backend is `@tokscale/cli` 4.13.0. Backend replacement occurs behind `src/providers/` without changing fleet callers or the snapshot schema.
@@ -31,7 +31,8 @@ flowchart LR
     Backend[Tokscale 4.13.0] --> CLI
     Local --> Edge[Private edge outbox]
     Edge -->|CapAuth signed HTTPS over tailnet| Collector[chiap04 collector :9398]
-    Gateway[SKGateway] -. planned separate lane .-> Collector
+    Gateway[SKGateway loopback token API] --> GatewayAdapter[SKCounter gateway adapter]
+    GatewayAdapter -->|separate CapAuth scope| Collector
     Collector --> Dashboard[SKDashboard Economy]
 ```
 
@@ -65,7 +66,7 @@ flowchart LR
       -. "read-only aggregate projection" .-> UI["SKDashboard Economy<br/>internal operator view"]
 ```
 
-The 0.2.0 harness path ends at the append-only chiap04 collector and its rebuildable projection outbox. The dashed SKGateway path remains planned and is never combined with harness totals by default.
+The 0.2.0 harness and gateway paths end at the append-only chiap04 collector and its rebuildable projection outbox. SKGateway observations use a distinct identity, capability, and measurement lane and are never combined with harness totals by default.
 
 ### 2.4 Collection sequence
 
@@ -121,9 +122,9 @@ SKCounter owns only normalized observations beneath `${SKCOUNTER_STATE_DIR:-${XD
 | `@tokscale/cli` 4.13.0 | SKCounter calls | Local parsing and aggregate reports |
 | Local harness stores | SKCounter reads | User-owned source data |
 | SKDashboard | Reads normalized observations | Economy AI Usage projection |
-| SKCapstone Fleet | Planned | Package, timer, version, and health inventory |
-| CapAuth | Planned | Least-privilege report capability verification |
-| SKGateway | Planned | Separate `gateway_observed` aggregate lane |
+| SKCapstone Fleet | Active | Package, timer, version, result, outbox, and acknowledgement inventory |
+| CapAuth | Active | Least-privilege report and gateway capability verification |
+| SKGateway | Active on chiap01 | Separate `gateway_observed` aggregate lane |
 
 ## 3. Build
 
@@ -259,6 +260,8 @@ Fleet activation follows [docs/ROLLOUT.md](./docs/ROLLOUT.md) and the dependent 
 6. Activate per-user timers only where an approved principal owns a supported harness store.
 7. Add SKGateway through the separate `gateway_observed` lane.
 
+The qualified 2026-08-23 deployment completed this sequence on eight native Linux nodes plus `chiwk11` WSL. The gateway adapter runs on `chiap01` against loopback only.
+
 No deployment step may pull raw remote session stores, scan all home directories as root, or combine measurement lanes by default.
 
 ### Front-end / Exposure
@@ -296,6 +299,32 @@ systemctl --user list-timers skcounter-edge.timer
 
 Copy only `public.asc` to the collector verifier. The timer's first scheduled run occurs after five minutes. Later runs occur every 15 minutes with up to two minutes of randomized delay.
 
+Register the corresponding Fleet status objects before requiring Fleet publication:
+
+```bash
+./scripts/apply-fleet-cronjobs.sh chiap01 chiap02 chiap03
+SKCOUNTER_FLEET_JOB=skcounter-gateway ./scripts/apply-fleet-cronjobs.sh chiap01
+skcapstone fleet describe cronjob skcounter-edge-chiap01
+```
+
+### SKGateway adapter deployment
+
+The gateway adapter runs only as the user that owns the active SKGateway process. Its token source must be loopback HTTP and its collector capability must be exactly `skcounter.gateway.submit`.
+
+```bash
+./scripts/install-runtime.sh gateway
+./scripts/provision-edge-identity.sh \
+  "$HOME/.local/state/skcounter-gateway/capauth" \
+  "$HOME/.local/state/skcounter-gateway/gnupg" \
+  "chiap01" "skgateway" \
+  "$HOME/.local/state/skcounter-gateway/public.asc" \
+  "skcounter.gateway.submit"
+systemctl --user start skcounter-gateway.service
+systemctl --user enable --now skcounter-gateway.timer
+```
+
+Import only the public key into the collector verifier and bind its trust entry to node `chiap01`, principal `skgateway`, lane `gateway_observed`, and scope `skcounter.gateway.submit`.
+
 ### Rollback
 
 Disable the per-user timer before removing a package:
@@ -319,7 +348,7 @@ Uninstallation removes the command but preserves configuration and observation s
 | `XDG_STATE_HOME` | `$HOME/.local/state` | Standard state root fallback |
 | `SKCOUNTER_BACKEND_CONFIG_HOME` | `$HOME/.config/skcounter/providers` | Isolated backend configuration |
 
-Runtime configuration is stored in `~/.config/skcounter/collector.json` on chiap04 and `~/.config/skcounter/edge.json` on each active principal. Both files are mode `0600`. The collector config declares `skcounter.collector.config.v1`, the tailnet bind, port `9398`, TLS paths, one MiB limit, 300 second clock skew, four allowed views, CapAuth verifier paths, exact issuer bindings, and retention. The edge config declares `skcounter.edge.config.v1`, the HTTPS collector URL, pinned collector certificate, local state, exact node and principal, isolated CapAuth keyring, retry limits, and seven-day sent retention.
+Runtime configuration is stored in `~/.config/skcounter/collector.json` on chiap04, `~/.config/skcounter/edge.json` on each active harness principal, and `~/.config/skcounter/gateway.json` on the SKGateway host. All files are mode `0600`. The collector config declares `skcounter.collector.config.v1`, the tailnet bind, port `9398`, TLS paths, one MiB limit, 300 second clock skew, four allowed views, CapAuth verifier paths, exact issuer bindings, and retention. Edge configs declare `skcounter.edge.config.v1`, the HTTPS collector URL, pinned collector certificate, local state, exact node and principal, isolated CapAuth keyring, retry limits, measurement lane, and seven-day sent retention.
 
 Tokscale receives `TOKSCALE_API_URL=http://127.0.0.1:9` from the adapter as a second local-only policy layer. Do not override the child environment to restore upstream social reporting.
 
@@ -344,12 +373,13 @@ Collection accepts only `--since YYYY-MM-DD`, `--until YYYY-MM-DD`, and `--outpu
 | `skcounter doctor` | Backend and client discovery state |
 | `skcounter backend` | Facade, backend, version, and policy state |
 | `skcounter_edge.py status --config PATH` | Last edge result, pending depth, and acknowledgement counts |
+| `skcounter_gateway.py status --config PATH` | Last gateway adapter result and private outbox depth |
 
 ### Collector endpoints
 
 | Endpoint | Authorization | Contract |
 | --- | --- | --- |
-| `POST /v1/observations` | CapAuth `skcounter.report.submit` bound to issuer, subject, node, and principal | Accepts one `skcounter.snapshot.v1`; returns `skcounter.ack.v1` |
+| `POST /v1/observations` | Exact CapAuth `skcounter.report.submit` or `skcounter.gateway.submit` binding | Accepts one lane-bound `skcounter.snapshot.v1`; returns `skcounter.ack.v1` |
 | `GET /healthz` | Tailnet transport boundary | Health, configured principal count, freshness, and counters |
 | `GET /metrics` | Tailnet transport boundary | Prometheus accepted, duplicate, rejected, replayed, invalid, and delayed counters |
 
@@ -369,6 +399,7 @@ The canonical machine contract is [schemas/skcounter.snapshot.v1.schema.json](./
 | Estimated cost differs from billing | Treat it as provider-estimated. Check `pricing_revision`; SKCounter does not claim provider billing truth. |
 | Dashboard coverage is below 100 percent | Inspect collector freshness and missing nodes. Missing coverage is not zero usage. |
 | Gateway and harness totals differ | Compare lanes separately. Do not sum them without an approved correlation rule. |
+| Gateway token total is lower than request count suggests | Inspect SKGateway upstream usage capture. Missing provider usage remains missing and is never estimated by this adapter. |
 | Edge status has pending records | Check `systemctl --user status skcounter-edge.service`, collector health, TLS certificate validity, CapAuth issuer enablement, and clock synchronization. |
 | Collector rejects `issuer_not_trusted` | Import only the edge public certificate, add the exact uppercase fingerprint binding, check node and principal, then restart the collector. |
 | No metrics after activation | Start one on-demand edge run and inspect `~/.local/state/skcounter/run-ledger.jsonl`; normal scheduled visibility is within 17 minutes. |
@@ -401,8 +432,8 @@ checks:
     run: grep -q '"const": "skcounter.snapshot.v1"' schemas/skcounter.snapshot.v1.schema.json
   - name: user install and rollback entry points exist
     run: test -x scripts/install-user.sh && test -x scripts/uninstall-user.sh
-  - name: collector and edge units exist
-    run: test -f deploy/systemd/skcounter-collector.service && test -f deploy/systemd/skcounter-edge.timer
+  - name: collector, edge, and gateway units exist
+    run: test -f deploy/systemd/skcounter-collector.service && test -f deploy/systemd/skcounter-edge.timer && test -f deploy/systemd/skcounter-gateway.timer
   - name: network mutation requires CapAuth
     run: grep -q 'CapAuth ' services/collector.mjs
 -->
