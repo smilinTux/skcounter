@@ -90,7 +90,28 @@ def _quantize(value: Any) -> Any:
 
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Serialize the bounded contract with JavaScript JSON number spelling."""
+    if value is None or isinstance(value, (bool, str)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not (-float("inf") < value < float("inf")):
+            raise EdgeError("SKGateway aggregate contains a non-finite number")
+        if value == 0:
+            return "0"
+        # Observation floats are quantized to six decimal places. Fixed-point
+        # spelling therefore matches JSON.stringify for the complete allowed
+        # range, including values such as 0.000001 that Python spells 1e-06.
+        return format(value, ".6f").rstrip("0").rstrip(".")
+    if isinstance(value, list):
+        return "[" + ",".join(_canonical_json(child) for child in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(
+            f"{json.dumps(key, ensure_ascii=False)}:{_canonical_json(value[key])}"
+            for key in sorted(value)
+        ) + "}"
+    raise EdgeError("SKGateway aggregate contains an unsupported value")
 
 
 def _digest(value: Any) -> str:

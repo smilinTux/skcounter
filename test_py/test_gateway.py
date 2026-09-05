@@ -1,5 +1,7 @@
+import hashlib
 import json
 import ssl
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -179,6 +181,24 @@ class GatewayObservationV2Test(unittest.TestCase):
             opener=FakeOpener(surfaces),
             now=when or (lambda: datetime(2026, 9, 5, 12, 30, tzinfo=timezone.utc)),
         )
+
+    def test_payload_hash_matches_javascript_for_small_decimal_cost(self):
+        from edge.skcounter_gateway import _digest, _quantize
+
+        value = _quantize({"cost": {"amount": 0.000001}, "ratio": 0.00001})
+        javascript = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                "process.stdout.write(JSON.stringify(JSON.parse(process.argv[1])))",
+                json.dumps(value, separators=(",", ":")),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertEqual(_digest(value), hashlib.sha256(javascript.encode()).hexdigest())
 
     def test_projects_reviewed_surfaces_into_v2_facts(self):
         observation = self.observation(
