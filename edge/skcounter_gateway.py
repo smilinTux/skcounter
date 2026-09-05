@@ -25,9 +25,93 @@ except ImportError:
 MAX_GATEWAY_RESPONSE_BYTES = 2_097_152
 DATE_BUCKET = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+OBSERVATION_V2_SCHEMA = "skcounter.gateway_observation.v2"
+OBSERVATION_V2_PATHS = (
+    "/api/stats",
+    "/api/health",
+    "/api/tokens",
+    "/api/costs",
+    "/api/events",
+    "/api/activity",
+)
+MAX_LATENCY_KEYS = 256
+MAX_BREAKDOWN_ENTRIES = 256
+MAX_HEALTH_BACKENDS = 64
+MAX_EVENT_TYPES = 32
+RECENT_WINDOW_SECONDS = 300
+
+# Provider and rail inference mirrors src/proxy/router.mjs in SKGateway so
+# the collector and the gateway never disagree about a backend label.
+def _infer_provider(backend_id: str) -> str | None:
+    lowered = backend_id.lower()
+    for provider in (
+        "nvidia",
+        "anthropic",
+        "ollama",
+        "openrouter",
+        "zai",
+        "codex",
+    ):
+        if provider in lowered:
+            return provider
+    if "chiap" in lowered or "ornith" in lowered or "qwen" in lowered or lowered == "local":
+        return "local"
+    return None
+
+
+def _infer_rail(backend_id: str, provider: str | None) -> str | None:
+    if provider == "local":
+        return "local"
+    if provider in {"nvidia", "anthropic", "openrouter", "zai"}:
+        return "cloud"
+    return "cloud" if provider else None
+
+
+def _unavailable(reason: str) -> dict[str, str]:
+    return {"unavailable": reason}
+
+
+def _quantize(value: Any) -> Any:
+    """Make numbers hash-identical across Python and JavaScript canonical JSON.
+
+    Integral floats become integers so 3.0 serializes as 3 in both languages,
+    and every float is pinned to six decimals before hashing.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        rounded = round(value, 6)
+        return int(rounded) if rounded.is_integer() else rounded
+    if isinstance(value, dict):
+        return {key: _quantize(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_quantize(child) for child in value]
+    return value
+
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Serialize the bounded contract with JavaScript JSON number spelling."""
+    if value is None or isinstance(value, (bool, str)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not (-float("inf") < value < float("inf")):
+            raise EdgeError("SKGateway aggregate contains a non-finite number")
+        if value == 0:
+            return "0"
+        # Observation floats are quantized to six decimal places. Fixed-point
+        # spelling therefore matches JSON.stringify for the complete allowed
+        # range, including values such as 0.000001 that Python spells 1e-06.
+        return format(value, ".6f").rstrip("0").rstrip(".")
+    if isinstance(value, list):
+        return "[" + ",".join(_canonical_json(child) for child in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(
+            f"{json.dumps(key, ensure_ascii=False)}:{_canonical_json(value[key])}"
+            for key in sorted(value)
+        ) + "}"
+    raise EdgeError("SKGateway aggregate contains an unsupported value")
 
 
 def _digest(value: Any) -> str:
@@ -59,6 +143,331 @@ def _gateway_url(config: dict[str, Any]) -> str:
     if not parsed.path.startswith("/api/tokens"):
         raise EdgeError("SKGateway metrics URL must use the token aggregate API")
     return value
+
+
+def _surface_url(config: dict[str, Any], path: str) -> str:
+    base = urllib.parse.urlsplit(_gateway_url(config))
+    return urllib.parse.urlunsplit(("http", base.netloc, path, "", ""))
+
+
+def _fetch_json(
+    config: dict[str, Any],
+    path: str,
+    *,
+    opener: Callable[..., Any],
+) -> Any | None:
+    """Fetch one bounded loopback surface. None means the surface is unavailable."""
+    request = urllib.request.Request(
+        _surface_url(config, path), headers={"Accept": "application/json"}
+    )
+    try:
+        with opener(request, timeout=int(config.get("request_timeout_seconds", 15))) as response:
+            body = response.read(MAX_GATEWAY_RESPONSE_BYTES + 1)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    if len(body) > MAX_GATEWAY_RESPONSE_BYTES:
+        return None
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        return None
+
+
+def _count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    if number < 0 or number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def _dimension(value: Any, maximum: int = 256) -> str | None:
+    if not isinstance(value, str) or not 1 <= len(value) <= maximum:
+        return None
+    return value
+
+
+def _latency_entries(latency: Any) -> dict[str, Any] | None:
+    if not isinstance(latency, dict) or not latency:
+        return None
+    entries: dict[str, Any] = {}
+    for position, (key, raw) in enumerate(sorted(latency.items())):
+        if position >= MAX_LATENCY_KEYS or not isinstance(raw, dict):
+            continue
+        entry: dict[str, float | int] = {}
+        for field in ("p50", "p95", "p99", "mean"):
+            number = _number_or_none(raw.get(field))
+            if number is not None:
+                entry[field] = round(number)
+        count = _count(raw.get("count"))
+        if count is not None:
+            entry["count"] = count
+        if entry:
+            entries[str(key)[:256]] = entry
+    return entries or None
+
+
+def _health_entries(health: Any) -> dict[str, Any] | None:
+    if not isinstance(health, dict) or not health:
+        return None
+    entries: dict[str, Any] = {}
+    for position, (backend, raw) in enumerate(sorted(health.items())):
+        if position >= MAX_HEALTH_BACKENDS or not isinstance(raw, dict):
+            continue
+        entry: dict[str, Any] = {}
+        status = _dimension(raw.get("status"), 64)
+        if status:
+            entry["status"] = status
+        for field in ("errorRate", "latencyP50", "totalRequests", "totalErrors"):
+            number = _number_or_none(raw.get(field))
+            if number is not None:
+                entry[field] = number
+        if entry:
+            entries[str(backend)[:256]] = entry
+    return entries or None
+
+
+def _type_histogram(records: Any) -> dict[str, Any] | None:
+    if not isinstance(records, list):
+        return None
+    histogram: dict[str, int] = {}
+    total = 0
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        total += 1
+        kind = _dimension(record.get("type") or record.get("kind"), 64)
+        if kind:
+            histogram[kind] = histogram.get(kind, 0) + 1
+            if len(histogram) > MAX_EVENT_TYPES:
+                return None
+    return {"count": total, "by_type": dict(sorted(histogram.items()))}
+
+
+def collect_gateway_observation(
+    config: dict[str, Any],
+    *,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+) -> dict[str, Any]:
+    """Emit one bounded v2 gateway observation from the reviewed safe surfaces.
+
+    Every fact is either an observed value or an explicit unavailable reason.
+    Facts with no safe HTTP surface stay unavailable instead of becoming zero.
+    """
+    surfaces = {path: _fetch_json(config, path, opener=opener) for path in OBSERVATION_V2_PATHS}
+    if all(surface is None for surface in surfaces.values()):
+        raise EdgeError("no SKGateway observation surface is reachable")
+
+    stats = surfaces["/api/stats"]
+    if not isinstance(stats, dict):
+        stats = None
+    tokens = surfaces["/api/tokens"]
+    token_rows = tokens.get("rows") if isinstance(tokens, dict) else None
+    if not isinstance(token_rows, list):
+        token_rows = None
+
+    observed = now().astimezone(timezone.utc)
+    observed_text = observed.isoformat().replace("+00:00", "Z")
+
+    requests: dict[str, Any] = {}
+    if stats is None:
+        requests["total"] = _unavailable("gateway_stats_surface_unavailable")
+        requests["active_concurrency"] = _unavailable("gateway_stats_surface_unavailable")
+        requests["error_count"] = _unavailable("gateway_stats_surface_unavailable")
+        requests["recent_requests_5m"] = _unavailable("gateway_stats_surface_unavailable")
+        requests["recent_errors_5m"] = _unavailable("gateway_stats_surface_unavailable")
+        requests["rate_5m_per_second"] = _unavailable("gateway_stats_surface_unavailable")
+    else:
+        for target, source in (
+            ("total", "totalRequests"),
+            ("active_concurrency", "activeRequests"),
+            ("error_count", "errorCount"),
+            ("recent_requests_5m", "recentRequests5m"),
+            ("recent_errors_5m", "recentErrors5m"),
+        ):
+            value = _count(stats.get(source))
+            requests[target] = (
+                value if value is not None else _unavailable(f"{source}_unavailable")
+            )
+        recent = _count(stats.get("recentRequests5m"))
+        requests["rate_5m_per_second"] = (
+            round(recent / RECENT_WINDOW_SECONDS, 6)
+            if recent is not None
+            else _unavailable("recentRequests5m_unavailable")
+        )
+
+    tokens_facts: dict[str, Any]
+    if stats is None:
+        tokens_facts = {"input": _unavailable("gateway_stats_surface_unavailable")}
+    else:
+        tokens_facts = {}
+        for target, source in (
+            ("input", "totalInputTokens"),
+            ("output", "totalOutputTokens"),
+        ):
+            value = _count(stats.get(source))
+            tokens_facts[target] = (
+                value if value is not None else _unavailable(f"{source}_unavailable")
+            )
+        recent_tokens = _count(stats.get("recentTokens5m"))
+        tokens_facts["throughput_5m_per_second"] = (
+            round(recent_tokens / RECENT_WINDOW_SECONDS, 6)
+            if recent_tokens is not None
+            else _unavailable("recentTokens5m_unavailable")
+        )
+
+    cost_facts: dict[str, Any]
+    if stats is None:
+        cost_facts = {"total_usd": _unavailable("gateway_stats_surface_unavailable")}
+    else:
+        cost_facts = {}
+        total = _number_or_none(stats.get("totalCostUsd"))
+        cost_facts["total_usd"] = total if total is not None else _unavailable("totalCostUsd_unavailable")
+        unpriced = _count(stats.get("unpricedRequests"))
+        cost_facts["unpriced_requests"] = (
+            unpriced if unpriced is not None else _unavailable("unpricedRequests_unavailable")
+        )
+        if total is None:
+            cost_facts["truth"] = "unknown"
+        elif unpriced:
+            cost_facts["truth"] = "partial"
+        else:
+            cost_facts["truth"] = "actual"
+
+    latency = _latency_entries(stats.get("latency")) if stats else None
+    health = _health_entries(surfaces["/api/health"])
+
+    models: list[str] = []
+    providers: list[str] = []
+    nodes: list[str] = []
+    clients: list[str] = []
+    rails: list[str] = []
+    daily_tokens: list[dict[str, Any]] = []
+    if token_rows is not None:
+        seen_models: set[str] = set()
+        seen_providers: set[str] = set()
+        seen_nodes: set[str] = set()
+        seen_clients: set[str] = set()
+        seen_rails: set[str] = set()
+        for row in token_rows[:10_000]:
+            if not isinstance(row, dict):
+                continue
+            bucket = row.get("bucket")
+            model = _dimension(row.get("model"))
+            backend = _dimension(row.get("backend"))
+            agent = _dimension(row.get("agent_id"), 128)
+            provider = _infer_provider(backend) if backend else None
+            rail = _infer_rail(backend, provider) if backend else None
+            for value, seen, collector in (
+                (model, seen_models, models),
+                (provider, seen_providers, providers),
+                (backend, seen_nodes, nodes),
+                (agent, seen_clients, clients),
+                (rail, seen_rails, rails),
+            ):
+                if value and value not in seen and len(collector) < MAX_BREAKDOWN_ENTRIES:
+                    seen.add(value)
+                    collector.append(value)
+            if isinstance(bucket, str) and DATE_BUCKET.fullmatch(bucket):
+                entry: dict[str, Any] = {"bucket": bucket}
+                for target, source in (
+                    ("input_tokens", "input_tokens"),
+                    ("output_tokens", "output_tokens"),
+                    ("cache_read_tokens", "cache_read_tokens"),
+                    ("cache_write_tokens", "cache_write_tokens"),
+                    ("request_count", "request_count"),
+                ):
+                    value = _count(row.get(source))
+                    if value is not None:
+                        entry[target] = value
+                if model:
+                    entry["model"] = model
+                if backend:
+                    entry["backend"] = backend
+                if agent:
+                    entry["agent"] = agent
+                if len(daily_tokens) < MAX_BREAKDOWN_ENTRIES:
+                    daily_tokens.append(entry)
+
+    events = _type_histogram(surfaces["/api/events"].get("events") if isinstance(surfaces["/api/events"], dict) else None)
+    activity = _type_histogram(surfaces["/api/activity"].get("activity") if isinstance(surfaces["/api/activity"], dict) else None)
+
+    uptime = _count(stats.get("uptime")) if stats else None
+    base = {
+        "schema_version": OBSERVATION_V2_SCHEMA,
+        "measurement_lane": "gateway_observed",
+        "node_id": str(config["node_id"]),
+        "principal_id": str(config["principal_id"]),
+        "collector": {
+            "product": "skcounter",
+            "facade_version": str(config.get("package_version", "0.2.0")),
+            "backend": "skgateway",
+            "backend_version": str(config.get("gateway_version", "unknown")),
+        },
+        "observed_at": observed_text,
+        "bucket_timezone": str(config.get("bucket_timezone", "UTC")),
+        "window": {
+            "start": observed.replace(hour=0, minute=0, second=0, microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "end": observed_text,
+        },
+        "source_state_digest": _digest(surfaces),
+        "facts": {
+            "gateway": {
+                "uptime_seconds": (
+                    uptime if uptime is not None else _unavailable("gateway_stats_surface_unavailable")
+                ),
+                "backend_health": health or _unavailable("gateway_health_surface_unavailable"),
+            },
+            "requests": requests,
+            "latency_ms": latency or _unavailable("latency_percentiles_unavailable"),
+            "queue": {
+                "wait_ms_percentiles": _unavailable(
+                    "gateway_surface_does_not_expose_queue_telemetry"
+                ),
+                "admission_outcomes": _unavailable(
+                    "gateway_surface_does_not_expose_queue_telemetry"
+                ),
+            },
+            "rate_limits": {
+                "http_429_count": _unavailable(
+                    "gateway_surface_does_not_expose_rate_limit_counts"
+                ),
+            },
+            "tokens": tokens_facts,
+            "generation": {
+                "throughput_tokens_per_second": _unavailable(
+                    "gateway_stats_surface_does_not_expose_generation_throughput"
+                ),
+            },
+            "cost": cost_facts,
+            "breakdowns": {
+                "models": sorted(models),
+                "providers": sorted(providers),
+                "nodes": sorted(nodes),
+                "clients": sorted(clients),
+                "apps": _unavailable(
+                    "gateway_surface_does_not_expose_application_attribution"
+                ),
+                "rails": sorted(rails),
+            },
+            "daily_token_rows": daily_tokens,
+            "events": events or _unavailable("gateway_events_surface_unavailable"),
+            "activity": activity or _unavailable("gateway_activity_surface_unavailable"),
+        },
+    }
+    quantized = _quantize(base)
+    payload_hash = _digest(quantized)
+    return {**quantized, "idempotency_key": payload_hash, "payload_hash": payload_hash}
 
 
 def collect_gateway_snapshot(
@@ -167,7 +576,7 @@ def _write_outbox(config: dict[str, Any], snapshot: dict[str, Any]) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="skcounter-gateway")
-    parser.add_argument("command", choices=("run", "check-config", "status"))
+    parser.add_argument("command", choices=("run", "observe", "check-config", "status"))
     parser.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
@@ -182,6 +591,12 @@ def main(argv: list[str] | None = None) -> int:
             status_path = Path(config["state_dir"]) / "status.json"
             print(status_path.read_text(encoding="utf-8").strip() if status_path.exists() else json.dumps({"status": "never_run"}))
             return 0
+        if args.command == "observe":
+            observation = collect_gateway_observation(config)
+            _write_outbox(config, observation)
+            status = run_once(config, collect=False)
+            print(_canonical_json(status))
+            return 0 if status["failed"] == 0 else 75
         snapshot = collect_gateway_snapshot(config)
         _write_outbox(config, snapshot)
         status = run_once(config, collect=False)
