@@ -94,6 +94,33 @@ class GatewayAdapterTest(unittest.TestCase):
         with self.assertRaises(EdgeError):
             load_config(path)
 
+    def test_normalizes_nullable_cache_counters_only(self):
+        row = {
+            "bucket": "2026-08-23",
+            "input_tokens": 10,
+            "output_tokens": 3,
+            "cache_read_tokens": None,
+            "cache_write_tokens": None,
+            "request_count": 4,
+        }
+
+        def collect(changed):
+            body = json.dumps({"rows": [{**row, **changed}]}).encode()
+            return collect_gateway_snapshot(
+                self.config,
+                opener=lambda *_args, **_kwargs: FakeResponse(body),
+            )
+
+        tokens = collect({})["aggregates"][0]["tokens"]
+        self.assertEqual(tokens["cache_read"], 0)
+        self.assertEqual(tokens["cache_write"], 0)
+        with self.assertRaisesRegex(EdgeError, "invalid integer"):
+            collect({"cache_read_tokens": "not-an-integer"})
+        with self.assertRaisesRegex(EdgeError, "invalid integer"):
+            collect({"input_tokens": None})
+        with self.assertRaisesRegex(EdgeError, "negative integer"):
+            collect({"cache_write_tokens": -1})
+
     def test_rejects_non_loopback_metrics_source(self):
         changed = dict(self.config, gateway_metrics_url="http://chiap01:18791/api/tokens")
         with self.assertRaises(EdgeError):
