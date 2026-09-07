@@ -100,17 +100,51 @@ function deriveKey(observation) {
         ...parts,
         String(agg.view || "unknown"),
         String(agg.bucket_start || "unknown"),
-      ].join(":");
+      ].map(encodeURIComponent).join(":");
       keys.push(viewKey);
     }
   }
 
   // If no aggregates, use a single key with no view/bucket
   if (keys.length === 0) {
-    keys.push(parts.join(":") + "::");
+    keys.push(parts.map(encodeURIComponent).join(":") + "::");
   }
 
   return keys;
+}
+
+function entryDimensions(observation, aggregateIndex) {
+  const aggregate = Array.isArray(observation.aggregates)
+    ? observation.aggregates[aggregateIndex]
+    : undefined;
+  return {
+    measurement_lane: String(observation.measurement_lane || "unknown"),
+    node_id: String(observation.node_id || "unknown"),
+    principal_id: String(observation.principal_id || "unknown"),
+    view: String(aggregate?.view || "unknown"),
+    bucket_start: String(aggregate?.bucket_start || "unknown"),
+  };
+}
+
+function queryDimensions(key, entry) {
+  if (
+    entry.measurement_lane !== undefined &&
+    entry.node_id !== undefined &&
+    entry.principal_id !== undefined &&
+    entry.view !== undefined &&
+    entry.bucket_start !== undefined
+  ) {
+    return {
+      lane: entry.measurement_lane,
+      node: entry.node_id,
+      principal: entry.principal_id,
+      view: entry.view,
+      bucket: entry.bucket_start,
+    };
+  }
+
+  const [lane, node, principal, view, ...bucketParts] = key.split(":");
+  return { lane, node, principal, view, bucket: bucketParts.join(":") };
 }
 
 /**
@@ -123,7 +157,7 @@ function computeAggregateKey(observation, aggregate) {
     String(observation.principal_id || "unknown"),
     String(aggregate.view || "unknown"),
     String(aggregate.bucket_start || "unknown"),
-  ].join(":");
+  ].map(encodeURIComponent).join(":");
 }
 
 /**
@@ -172,6 +206,7 @@ export function updateIndex(observation, observationPath, { indexRoot, indexDir 
       const entry = {
         schema_version: INDEX_SCHEMA_VERSION,
         key: key,
+        ...entryDimensions(observation, i),
         observation_path: extractRelativePath(observationPath, root) || observationPath,
         observed_at: observation.observed_at,
         payload_hash: observation.payload_hash,
@@ -288,12 +323,14 @@ export function rebuildIndex({ indexRoot, indexDir, sentDir } = {}) {
     try {
       const keys = deriveKey(observation);
 
-      for (const key of keys) {
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i];
         const existing = indexMap.get(key);
         if (!existing || observation.observed_at > existing.observed_at) {
           const entry = {
             schema_version: INDEX_SCHEMA_VERSION,
             key: key,
+            ...entryDimensions(observation, i),
             observation_path: extractRelativePath(path, root) || path,
             observed_at: observation.observed_at,
             payload_hash: observation.payload_hash,
@@ -348,13 +385,13 @@ export function queryLatestIndex({ indexRoot, indexDir, lane, node, principal, v
   const results = [];
 
   for (const [key, entry] of indexMap) {
-    const parts = key.split(":");
+    const dimensions = queryDimensions(key, entry);
 
-    if (lane && parts[0] !== lane) continue;
-    if (node && parts[1] !== node) continue;
-    if (principal && parts[2] !== principal) continue;
-    if (view && parts[3] !== view) continue;
-    if (bucket && parts[4] !== bucket) continue;
+    if (lane && dimensions.lane !== lane) continue;
+    if (node && dimensions.node !== node) continue;
+    if (principal && dimensions.principal !== principal) continue;
+    if (view && dimensions.view !== view) continue;
+    if (bucket && dimensions.bucket !== bucket) continue;
 
     results.push({ key, ...entry });
   }

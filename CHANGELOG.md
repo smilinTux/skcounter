@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Add the bounded append-only latest-observation index for reconciled SKCounter reads.
+- Preserve exact observation dimensions and valid records around malformed index lines.
 
 All notable changes to SKCounter are documented here.
 
