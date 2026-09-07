@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Add the bounded append-only latest-observation index for reconciled SKCounter reads.
+- Add deterministic content-addressed collector bundles with complete source, dependency, runtime, configuration, and provenance manifests plus isolated replay and port 9398 health qualification.
 - Preserve exact observation dimensions and valid records around malformed index lines.
 
 All notable changes to SKCounter are documented here.
