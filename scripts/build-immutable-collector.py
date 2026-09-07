@@ -226,7 +226,13 @@ def python_runtime_files() -> tuple[list[tuple[str, Path]], list[Path]]:
 
 
 def runtime_wrapper(real_name: str, *, python: bool = False) -> bytes:
-    setup = "export PYTHONHOME=\"$root/python\" PYTHONNOUSERSITE=1\n" if python else ""
+    version = f"python{sys.version_info.major}.{sys.version_info.minor}"
+    setup = (
+        "export PYTHONHOME=\"$root/python\" PYTHONNOUSERSITE=1 "
+        f"PYTHONPATH=\"$root/python/lib/{version}/site-packages\"\n"
+        if python
+        else ""
+    )
     isolated = " -s" if python else ""
     return (
         "#!/bin/sh\n"
