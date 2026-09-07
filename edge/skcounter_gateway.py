@@ -44,6 +44,10 @@ def _integer(value: Any) -> int:
     return number
 
 
+def _nullable_cache_integer(value: Any) -> int:
+    return 0 if value is None else _integer(value)
+
+
 def _bounded(value: Any, fallback: str, maximum: int) -> str:
     text = str(value or fallback)
     if not 1 <= len(text) <= maximum:
@@ -98,8 +102,8 @@ def collect_gateway_snapshot(
             "provider": _bounded(row.get("backend"), "unknown", 128),
             "input": _integer(row.get("input_tokens", 0)),
             "output": _integer(row.get("output_tokens", 0)),
-            "cache_read": _integer(row.get("cache_read_tokens", 0)),
-            "cache_write": _integer(row.get("cache_write_tokens", 0)),
+            "cache_read": _nullable_cache_integer(row.get("cache_read_tokens")),
+            "cache_write": _nullable_cache_integer(row.get("cache_write_tokens")),
             "messages": _integer(row.get("request_count", 0)),
         }
         selected_rows.append(selected)
