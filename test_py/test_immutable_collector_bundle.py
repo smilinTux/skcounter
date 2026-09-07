@@ -226,7 +226,7 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 cwd=root,
                 env=environment,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 text=True,
             )
             context = ssl.create_default_context(cafile=str(cert))
@@ -245,7 +245,8 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
 
                         time.sleep(0.05)
                 else:
-                    self.fail("collector did not become healthy on 9398")
+                    _stdout, stderr = process.communicate(timeout=1)
+                    self.fail(f"collector did not become healthy on 9398: {stderr}")
                 self.assertEqual(health["status"], "ok")
                 self.assertEqual(health["schema_version"], "skcounter.health.v1")
                 replay_script = """
