@@ -280,6 +280,7 @@ catch (error) { if (error.code !== 'EEXIST') throw error; }
             finally:
                 process.terminate()
                 process.wait(timeout=5)
+                process.communicate()
 
             prior = runtime_root / "skcounter-collector" / "versions" / "prior"
             prior.mkdir()
