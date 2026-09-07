@@ -15,7 +15,7 @@ The builder emits an uncompressed deterministic tar archive named by its SHA-256
 - each member's path, mode, size, category, and SHA-256 digest;
 - private Node, Python, GnuPG, Python standard-library, CapAuth dependency, native-loader, and shared-library bytes plus their versions, platform, and architecture.
 
-The configuration member is an inert template. It contains no trusted issuer, certificate, key, token, or credential. The sealed units execute the fleet runtime contract's atomic `current` link rather than a checkout or unversioned copied directory. Relative entrypoints invoke only the bundled loader, libraries, executables, standard library, and package closure. The archive is a source and artifact candidate, not an installer and not authorization to activate a service.
+The configuration member is an inert template. It contains no trusted issuer, certificate, key, token, or credential. The sealed collector unit executes the fleet runtime contract's atomic `current` link rather than a checkout or unversioned copied directory. Relative entrypoints invoke only the bundled loader, libraries, executables, standard library, and package closure. Edge source bytes remain provenance members and are not presented as a separately deployable runtime. The archive is a source and artifact candidate, not an installer and not authorization to activate a service.
 
 Run the focused qualification without touching the live collector:
 

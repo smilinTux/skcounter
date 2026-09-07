@@ -26,6 +26,7 @@ SOURCE_MEMBERS = (
     "services/collector.mjs",
     "services/capauth_verify.py",
     "src/snapshot.mjs",
+    "src/constants.mjs",
     "edge/__init__.py",
     "edge/run-edge.sh",
     "edge/skcounter_edge.py",
@@ -68,34 +69,6 @@ UMask=0077
 
 [Install]
 WantedBy=default.target
-"""
-EDGE_UNIT = f"""[Unit]
-Description=SKCounter private edge aggregate collection
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart={RUNTIME_CURRENT}/bin/edge
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/state/skcounter -%h/.skcapstone/fleet -%h/.skcapstone/pubsub -%h/.skcapstone/coordination/gtd -%h/.skcapstone/notifications
-UMask=0077
-"""
-EDGE_TIMER = """[Unit]
-Description=Run SKCounter every 15 minutes
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=15min
-RandomizedDelaySec=2min
-Persistent=true
-AccuracySec=30s
-
-[Install]
-WantedBy=timers.target
 """
 CONFIG_TEMPLATE = {
     "schema_version": "skcounter.collector.config.v1",
@@ -255,10 +228,7 @@ def collect(
     configuration = canonical(CONFIG_TEMPLATE)
     add_bytes(files, "configuration/collector.template.json", configuration, "configuration", 0o600)
     add_bytes(files, "units/skcounter-collector.service", COLLECTOR_UNIT.encode(), "unit")
-    add_bytes(files, "units/skcounter-edge.service", EDGE_UNIT.encode(), "unit")
-    add_bytes(files, "units/skcounter-edge.timer", EDGE_TIMER.encode(), "unit")
     add_bytes(files, "bin/collector", b'#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/runtime/bin/node" "$root/source/services/collector.mjs" "$@"\n', "entrypoint", 0o755)
-    add_bytes(files, "bin/edge", b'#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/runtime/bin/python3" "$root/source/edge/skcounter_edge.py" "$@"\n', "entrypoint", 0o755)
 
     executables = {
         "node.real": node.resolve(),
