@@ -40,7 +40,9 @@ def _safe_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
     return members
 
 
-def _verify_extracted(root: Path, manifest: dict[str, object]) -> None:
+def _verify_extracted(
+    root: Path, manifest: dict[str, object], *, sealed: bool = False
+) -> None:
     if manifest.get("schema_version") != BUNDLE_SCHEMA:
         raise ValueError("unsupported bundle schema")
     declared = manifest.get("members")
@@ -52,12 +54,15 @@ def _verify_extracted(root: Path, manifest: dict[str, object]) -> None:
             raise ValueError("invalid bundle member record")
         path = root / item["path"]
         expected.add(item["path"])
+        expected_mode = int(str(item.get("mode")), 8)
+        if sealed:
+            expected_mode &= ~0o222
         if (
             not path.is_file()
             or path.is_symlink()
             or path.stat().st_size != item.get("size")
             or sha256(path) != item.get("sha256")
-            or f"{path.stat().st_mode & 0o777:04o}" != item.get("mode")
+            or path.stat().st_mode & 0o777 != expected_mode
         ):
             raise ValueError(f"bundle member mismatch: {item['path']}")
     actual = {
@@ -65,6 +70,22 @@ def _verify_extracted(root: Path, manifest: dict[str, object]) -> None:
     }
     if actual != expected:
         raise ValueError("bundle member inventory mismatch")
+    if sealed and any(path.stat().st_mode & 0o222 for path in root.rglob("*")):
+        raise ValueError("promoted runtime is writable")
+
+
+def _seal(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.is_file():
+            path.chmod(path.stat().st_mode & 0o555)
+    (root / "MANIFEST.json").chmod(0o444)
+    for path in sorted(
+        (path for path in root.rglob("*") if path.is_dir()),
+        key=lambda value: len(value.parts),
+        reverse=True,
+    ):
+        path.chmod(0o555)
+    root.chmod(0o555)
 
 
 def _replace_link(link: Path, target: Path | None) -> None:
@@ -111,13 +132,15 @@ def promote(
                 archive.extractall(stage, members=members, filter="data")
             manifest = json.loads((stage / "MANIFEST.json").read_text(encoding="utf-8"))
             _verify_extracted(stage, manifest)
+            _seal(stage)
+            _verify_extracted(stage, manifest, sealed=True)
             os.replace(stage, version)
     else:
         manifest = json.loads((version / "MANIFEST.json").read_text(encoding="utf-8"))
-        _verify_extracted(version, manifest)
+        _verify_extracted(version, manifest, sealed=True)
 
     current = service_root / "current"
-    previous = current.resolve(strict=False) if current.is_symlink() else None
+    previous = Path(os.readlink(current)) if current.is_symlink() else None
     _replace_link(current, version)
     try:
         qualify(current)

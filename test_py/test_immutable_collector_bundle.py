@@ -130,6 +130,10 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             self.assertIsNone(previous)
             current = runtime_root / "skcounter-collector" / "current"
             self.assertEqual(current.resolve(), bundle)
+            self.assertFalse(bundle.stat().st_mode & 0o222)
+            self.assertFalse((bundle / "bin/collector").stat().st_mode & 0o222)
+            with self.assertRaises(PermissionError):
+                (bundle / "bin/collector").open("ab")
             unit = (bundle / "units/skcounter-collector.service").read_text(
                 encoding="utf-8"
             )
@@ -285,7 +289,7 @@ catch (error) { if (error.code !== 'EEXIST') throw error; }
             prior = runtime_root / "skcounter-collector" / "versions" / "prior"
             prior.mkdir()
             current.unlink()
-            current.symlink_to(prior)
+            current.symlink_to("versions/prior")
 
             def fail_qualification(_promoted: Path) -> None:
                 raise RuntimeError("forced qualification failure")
@@ -295,6 +299,7 @@ catch (error) { if (error.code !== 'EEXIST') throw error; }
                     artifact, runtime_manifest, runtime_root, fail_qualification
                 )
             self.assertEqual(current.resolve(), prior)
+            self.assertEqual(current.readlink(), Path("versions/prior"))
 
 
 if __name__ == "__main__":
