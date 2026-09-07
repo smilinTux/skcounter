@@ -4,14 +4,15 @@ import hashlib
 import importlib.metadata
 import importlib.util
 import json
-import shutil
 import ssl
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = ROOT / "scripts" / "build-immutable-collector.py"
@@ -36,10 +37,22 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             ROOT,
             output,
             "HEAD",
-            Path(shutil.which("node") or "node"),
-            Path(shutil.which("python3") or "python3"),
-            Path(shutil.which("gpg") or "gpg"),
+            BUILDER.runtime_executable("node"),
+            BUILDER.runtime_executable("python3", Path(sys.executable)),
+            BUILDER.runtime_executable("gpg"),
         )
+
+    def test_runtime_discovery_ignores_path_wrappers_and_rejects_them(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            wrapper = Path(temporary) / "gpg"
+            wrapper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            wrapper.chmod(0o755)
+            with mock.patch.dict("os.environ", {"PATH": temporary}):
+                resolved = BUILDER.runtime_executable("gpg")
+            self.assertNotEqual(resolved, wrapper)
+            self.assertEqual(resolved.read_bytes()[:4], b"\x7fELF")
+            with self.assertRaisesRegex(SystemExit, "must be an ELF binary"):
+                BUILDER.runtime_executable("gpg", wrapper)
 
     @unittest.skipUnless(
         importlib.util.find_spec("capauth") is not None,
@@ -121,7 +134,14 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
     def test_isolated_replay_and_9398_health_compatibility(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            artifact, _ = self.build(root / "build")
+            shadow = root / "shadow"
+            shadow.mkdir()
+            (shadow / "gpg").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+            (shadow / "gpg").chmod(0o755)
+            with mock.patch.dict(
+                "os.environ", {"PATH": f"{shadow}:{BUILDER.os.defpath}"}
+            ):
+                artifact, _ = self.build(root / "build")
             runtime_manifest = artifact.parent / f"{artifact.name}.runtime.json"
             runtime_root = root / "runtime-root"
             bundle, previous = PROMOTER.promote(

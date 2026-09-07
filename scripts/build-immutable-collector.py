@@ -105,6 +105,20 @@ def command(*argv: str) -> str:
     return subprocess.check_output(argv, text=True, stderr=subprocess.DEVNULL).strip()
 
 
+def runtime_executable(name: str, value: Path | None = None) -> Path:
+    """Resolve one loader-compatible executable without trusting the user PATH."""
+
+    candidate = value or Path(shutil.which(name, path=os.defpath) or "")
+    if not candidate.is_file():
+        raise SystemExit(f"required runtime executable is missing: {name}")
+    candidate = candidate.resolve()
+    with candidate.open("rb") as stream:
+        magic = stream.read(4)
+    if magic != b"\x7fELF":
+        raise SystemExit(f"runtime executable must be an ELF binary: {candidate}")
+    return candidate
+
+
 def runtime_libraries(executable: Path) -> list[Path]:
     try:
         output = command("ldd", str(executable))
@@ -228,6 +242,9 @@ def runtime_wrapper(real_name: str, *, python: bool = False) -> bytes:
 def collect(
     repo: Path, source_ref: str, node: Path, python: Path, gpg: Path
 ) -> tuple[dict[str, tuple[bytes, int, str]], dict[str, object]]:
+    node = runtime_executable("node", node)
+    python = runtime_executable("python3", python)
+    gpg = runtime_executable("gpg", gpg)
     files: dict[str, tuple[bytes, int, str]] = {}
     for member in SOURCE_MEMBERS:
         mode = 0o755 if member in EXECUTABLE_SOURCE else 0o644
@@ -390,17 +407,17 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-ref", default="HEAD")
-    parser.add_argument("--node", type=Path, default=Path(shutil.which("node") or ""))
+    parser.add_argument("--node", type=Path, default=None)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
-    parser.add_argument("--gpg", type=Path, default=Path(shutil.which("gpg") or ""))
+    parser.add_argument("--gpg", type=Path, default=None)
     args = parser.parse_args()
     artifact, artifact_hash = build(
         args.repo.resolve(),
         args.output.resolve(),
         args.source_ref,
-        args.node,
-        args.python,
-        args.gpg,
+        runtime_executable("node", args.node),
+        runtime_executable("python3", args.python),
+        runtime_executable("gpg", args.gpg),
     )
     print(
         json.dumps({"artifact": str(artifact), "sha256": artifact_hash}, sort_keys=True)
