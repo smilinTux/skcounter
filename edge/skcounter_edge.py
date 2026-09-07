@@ -19,6 +19,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 
 MAX_OBSERVATION_BYTES = 1_048_576
@@ -66,7 +67,9 @@ def load_config(path: Path) -> dict[str, Any]:
     }
     if allowed_bindings.get(scope) != lane:
         raise EdgeError("edge scope and measurement lane are not allowed")
-    if not SAFE_ID.fullmatch(str(config["node_id"])) or not SAFE_ID.fullmatch(str(config["principal_id"])):
+    if not SAFE_ID.fullmatch(str(config["node_id"])) or not SAFE_ID.fullmatch(
+        str(config["principal_id"])
+    ):
         raise EdgeError("edge node or principal is invalid")
     if config["subject"] != f"skcounter:{config['node_id']}:{config['principal_id']}":
         raise EdgeError("edge subject does not match node and principal")
@@ -122,7 +125,11 @@ def _collect(config: dict[str, Any], outbox: Path) -> None:
 def _observation_files(outbox: Path) -> list[Path]:
     if not outbox.exists():
         return []
-    return sorted(path for path in outbox.rglob("*.json") if path.is_file() and not path.is_symlink())
+    return sorted(
+        path
+        for path in outbox.rglob("*.json")
+        if path.is_file() and not path.is_symlink()
+    )
 
 
 def _read_observation(path: Path) -> tuple[bytes, dict[str, Any]]:
@@ -151,9 +158,14 @@ def _post(
     opener: Callable[..., Any] = urllib.request.urlopen,
     now: Callable[[], datetime] = _utc_now,
 ) -> dict[str, Any]:
-    if observation.get("node_id") != config["node_id"] or observation.get("principal_id") != config["principal_id"]:
+    if (
+        observation.get("node_id") != config["node_id"]
+        or observation.get("principal_id") != config["principal_id"]
+    ):
         raise EdgeError("outbox observation identity does not match edge config")
-    if observation.get("measurement_lane") != config.get("measurement_lane", "harness_reported"):
+    if observation.get("measurement_lane") != config.get(
+        "measurement_lane", "harness_reported"
+    ):
         raise EdgeError("outbox observation lane does not match edge config")
     idempotency_key = observation.get("idempotency_key")
     if not isinstance(idempotency_key, str) or len(idempotency_key) != 64:
@@ -172,11 +184,20 @@ def _post(
     )
     context = ssl.create_default_context(cafile=str(config["ca_file"]))
     try:
-        with opener(request, timeout=int(config.get("request_timeout_seconds", 15)), context=context) as response:
+        with opener(
+            request,
+            timeout=int(config.get("request_timeout_seconds", 15)),
+            context=context,
+        ) as response:
             if response.status != 200:
                 raise EdgeError("collector rejected observation")
             ack = json.loads(response.read(16_384))
-    except (urllib.error.URLError, TimeoutError, ssl.SSLError, json.JSONDecodeError) as exc:
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        ssl.SSLError,
+        json.JSONDecodeError,
+    ) as exc:
         raise EdgeError("collector delivery failed") from exc
     if (
         ack.get("schema_version") != "skcounter.ack.v1"
@@ -188,7 +209,9 @@ def _post(
 
 
 def _archive(path: Path, sent_root: Path, observation: dict[str, Any]) -> None:
-    destination_dir = sent_root / str(observation["node_id"]) / str(observation["principal_id"])
+    destination_dir = (
+        sent_root / str(observation["node_id"]) / str(observation["principal_id"])
+    )
     _private_dir(destination_dir)
     destination = destination_dir / path.name
     if destination.exists():
@@ -201,7 +224,9 @@ def _archive(path: Path, sent_root: Path, observation: dict[str, Any]) -> None:
     return destination
 
 
-def _update_latest_index(config: dict[str, Any], observation_path: Path, observation: dict[str, Any]) -> None:
+def _update_latest_index(
+    config: dict[str, Any], observation_path: Path, observation: dict[str, Any]
+) -> None:
     """Update the latest observation index after successful delivery."""
     index_path = Path(config["state_dir"]) / "latest-observation-index.jsonl"
 
@@ -212,35 +237,55 @@ def _update_latest_index(config: dict[str, Any], observation_path: Path, observa
     current_index: dict[str, dict[str, Any]] = {}
     if index_path.exists():
         try:
-            for line in index_path.read_text(encoding="utf-8").strip().split("\n"):
-                if line:
+            lines = index_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        for line in lines:
+            if line:
+                try:
                     entry = json.loads(line)
-                    if entry.get("schema_version") == "skcounter.latest-observation-index.v1":
+                    if (
+                        entry.get("schema_version")
+                        == "skcounter.latest-observation-index.v1"
+                    ):
                         key = entry["key"]
                         # Keep only the latest entry per key
-                        if key not in current_index or entry["observed_at"] > current_index[key]["observed_at"]:
+                        if (
+                            key not in current_index
+                            or entry["observed_at"] > current_index[key]["observed_at"]
+                        ):
                             current_index[key] = entry
-        except (json.JSONDecodeError, OSError, KeyError):
-            pass
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
 
     # Update with new entries
     sent_dir = Path(config["state_dir"]) / "sent"
-    for key in keys:
+    for aggregate, key in zip(observation.get("aggregates", []), keys, strict=True):
         entry = {
             "schema_version": "skcounter.latest-observation-index.v1",
             "key": key,
+            "measurement_lane": observation.get("measurement_lane", "unknown"),
+            "node_id": observation.get("node_id", "unknown"),
+            "principal_id": observation.get("principal_id", "unknown"),
+            "view": aggregate.get("view", "unknown"),
+            "bucket_start": aggregate.get("bucket_start", "unknown"),
             "observation_path": str(observation_path.relative_to(sent_dir)),
             "observed_at": observation["observed_at"],
             "payload_hash": observation["payload_hash"],
             "idempotency_key": observation["idempotency_key"],
         }
-        if key not in current_index or entry["observed_at"] > current_index[key]["observed_at"]:
+        if (
+            key not in current_index
+            or entry["observed_at"] > current_index[key]["observed_at"]
+        ):
             current_index[key] = entry
 
     # Enforce 10,000 entry limit
     if len(current_index) > 10000:
         # Keep most recent by observed_at
-        sorted_entries = sorted(current_index.values(), key=lambda e: e["observed_at"], reverse=True)
+        sorted_entries = sorted(
+            current_index.values(), key=lambda e: e["observed_at"], reverse=True
+        )
         current_index = {e["key"]: e for e in sorted_entries[:10000]}
 
     # Write atomically
@@ -257,17 +302,25 @@ def _derive_index_keys(observation: dict[str, Any]) -> list[str]:
     for agg in observation.get("aggregates", []):
         view = agg.get("view", "unknown")
         bucket = agg.get("bucket_start", "unknown")
-        key = f"{lane}:{node}:{principal}:{view}:{bucket}"
+        key = ":".join(
+            quote(str(part), safe="-_.!~*'()")
+            for part in (lane, node, principal, view, bucket)
+        )
         keys.append(key)
 
     return keys
 
 
-def _write_index_atomically(index_path: Path, index_data: dict[str, dict[str, Any]]) -> None:
+def _write_index_atomically(
+    index_path: Path, index_data: dict[str, dict[str, Any]]
+) -> None:
     """Write index atomically using temp file then rename."""
     tmp_path = index_path.with_name(f".{index_path.name}.{os.getpid()}.tmp")
 
-    lines = [json.dumps(entry, sort_keys=True, separators=(",", ":")) for entry in sorted(index_data.values(), key=lambda e: e["key"])]
+    lines = [
+        json.dumps(entry, sort_keys=True, separators=(",", ":"))
+        for entry in sorted(index_data.values(), key=lambda e: e["key"])
+    ]
     tmp_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     tmp_path.chmod(0o600)
     os.replace(tmp_path, index_path)
@@ -288,7 +341,10 @@ def _prune(root: Path, days: int, now: datetime) -> int:
 def _write_status(path: Path, status: dict[str, Any]) -> None:
     _private_dir(path.parent)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(status, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    temporary.write_text(
+        json.dumps(status, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     temporary.chmod(0o600)
     os.replace(temporary, path)
 
@@ -331,7 +387,14 @@ def run_once(
                 delays = list(config.get("retry_delays_seconds", [1, 2]))
                 while True:
                     try:
-                        _post(config, body, observation, token_minter=token_minter, opener=opener, now=now)
+                        _post(
+                            config,
+                            body,
+                            observation,
+                            token_minter=token_minter,
+                            opener=opener,
+                            now=now,
+                        )
                         archived_path = _archive(path, sent, observation)
                         acknowledged += 1
                         # Successfully delivered and archived, now update index
@@ -376,7 +439,11 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "status":
             status_path = Path(config["state_dir"]) / "status.json"
-            print(status_path.read_text(encoding="utf-8").strip() if status_path.exists() else json.dumps({"status": "never_run"}))
+            print(
+                status_path.read_text(encoding="utf-8").strip()
+                if status_path.exists()
+                else json.dumps({"status": "never_run"})
+            )
             return 0
         status = run_once(config, collect=args.command == "run")
         print(json.dumps(status, sort_keys=True, separators=(",", ":")))

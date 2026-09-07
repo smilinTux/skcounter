@@ -1,15 +1,14 @@
 """Tests for the latest observation index in the edge collector."""
 
 import json
-import os
 import tempfile
+import unittest
 from pathlib import Path
-from unittest import mock
 
 from edge import skcounter_edge
 
 
-class TestLatestObservationIndex:
+class TestLatestObservationIndex(unittest.TestCase):
     """Test the latest observation index functionality."""
 
     def test_derive_index_keys(self):
@@ -39,8 +38,8 @@ class TestLatestObservationIndex:
         keys = skcounter_edge._derive_index_keys(observation)
 
         assert len(keys) == 2
-        assert "harness_reported:chiap01:user1:daily:2026-08-31T00:00:00Z" in keys
-        assert "harness_reported:chiap01:user1:hourly:2026-08-31T12:00:00Z" in keys
+        assert "harness_reported:chiap01:user1:daily:2026-08-31T00%3A00%3A00Z" in keys
+        assert "harness_reported:chiap01:user1:hourly:2026-08-31T12%3A00%3A00Z" in keys
 
     def test_write_index_atomically(self):
         """Test that index is written atomically using temp file then rename."""
@@ -109,7 +108,10 @@ class TestLatestObservationIndex:
             content = index_path.read_text(encoding="utf-8")
             entry = json.loads(content.strip())
 
-            assert entry["key"] == "harness_reported:chiap01:user1:daily:2026-08-31T00:00:00Z"
+            assert (
+                entry["key"]
+                == "harness_reported:chiap01:user1:daily:2026-08-31T00%3A00%3A00Z"
+            )
             assert entry["observed_at"] == "2026-08-31T10:00:00Z"
             assert entry["payload_hash"] == "a" * 64
 
@@ -160,10 +162,14 @@ class TestLatestObservationIndex:
             observation_path.touch()
 
             # Add old observation
-            skcounter_edge._update_latest_index(config, observation_path, old_observation)
+            skcounter_edge._update_latest_index(
+                config, observation_path, old_observation
+            )
 
             # Add new observation for same key
-            skcounter_edge._update_latest_index(config, observation_path, new_observation)
+            skcounter_edge._update_latest_index(
+                config, observation_path, new_observation
+            )
 
             index_path = state_dir / "latest-observation-index.jsonl"
             content = index_path.read_text(encoding="utf-8")
@@ -203,7 +209,9 @@ class TestLatestObservationIndex:
                         }
                     ],
                 }
-                skcounter_edge._update_latest_index(config, observation_path, observation)
+                skcounter_edge._update_latest_index(
+                    config, observation_path, observation
+                )
 
             index_path = state_dir / "latest-observation-index.jsonl"
             content = index_path.read_text(encoding="utf-8")
@@ -252,6 +260,56 @@ class TestLatestObservationIndex:
             content = index_path.read_text(encoding="utf-8")
             entry = json.loads(content.strip())
             assert entry["schema_version"] == "skcounter.latest-observation-index.v1"
+
+    def test_update_index_preserves_valid_lines_after_malformed_line(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            sent_dir = state_dir / "sent" / "chiap01" / "user1"
+            sent_dir.mkdir(parents=True)
+            observation_path = sent_dir / "new.json"
+            observation_path.touch()
+            index_path = state_dir / "latest-observation-index.jsonl"
+
+            def entry(key):
+                return {
+                    "schema_version": "skcounter.latest-observation-index.v1",
+                    "key": key,
+                    "observation_path": "chiap01/user1/old.json",
+                    "observed_at": "2026-08-31T09:00:00Z",
+                    "payload_hash": "a" * 64,
+                    "idempotency_key": "b" * 64,
+                }
+
+            before_key = "lane:node:principal:daily:2026-08-30T00:00:00Z"
+            after_key = "lane:node:principal:daily:2026-08-31T00:00:00Z"
+            index_path.write_text(
+                json.dumps(entry(before_key))
+                + "\n{malformed\n"
+                + json.dumps(entry(after_key))
+                + "\n",
+                encoding="utf-8",
+            )
+            observation = {
+                "measurement_lane": "harness_reported",
+                "node_id": "chiap01",
+                "principal_id": "user1",
+                "observed_at": "2026-08-31T10:00:00Z",
+                "payload_hash": "c" * 64,
+                "idempotency_key": "d" * 64,
+                "aggregates": [
+                    {"view": "daily", "bucket_start": "2026-08-31T10:00:00Z"}
+                ],
+            }
+
+            skcounter_edge._update_latest_index(
+                {"state_dir": tmpdir}, observation_path, observation
+            )
+
+            keys = {
+                json.loads(line)["key"] for line in index_path.read_text().splitlines()
+            }
+            assert before_key in keys
+            assert after_key in keys
 
     def test_update_index_handles_missing_aggregates(self):
         """Test that observations without aggregates are handled gracefully."""
@@ -315,7 +373,9 @@ class TestLatestObservationIndex:
                         }
                     ],
                 }
-                skcounter_edge._update_latest_index(config, observation_path, observation)
+                skcounter_edge._update_latest_index(
+                    config, observation_path, observation
+                )
 
             index_path = state_dir / "latest-observation-index.jsonl"
             content = index_path.read_text(encoding="utf-8")

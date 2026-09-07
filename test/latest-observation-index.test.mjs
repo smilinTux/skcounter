@@ -181,14 +181,31 @@ describe("latest-observation-index", () => {
       });
 
       assert.strictEqual(results.length, 1);
-      assert.strictEqual(results[0].key, "harness_reported:chiap01:user1:daily:2026-08-31T00:00:00Z");
+      assert.strictEqual(
+        results[0].key,
+        "harness_reported:chiap01:user1:daily:2026-08-31T00%3A00%3A00Z",
+      );
 
       const hourlyResults = queryLatestIndex({
         indexRoot: testDir,
         view: "hourly",
+        bucket: "2026-08-31T12:00:00Z",
       });
       assert.strictEqual(hourlyResults.length, 1);
-      assert.strictEqual(hourlyResults[0].key, "harness_reported:chiap01:user1:hourly:2026-08-31T12:00:00Z");
+      assert.strictEqual(
+        hourlyResults[0].key,
+        "harness_reported:chiap01:user1:hourly:2026-08-31T12%3A00%3A00Z",
+      );
+
+      const exactDimensions = queryLatestIndex({
+        indexRoot: testDir,
+        lane: "harness_reported",
+        node: "chiap01",
+        principal: "user1",
+        view: "daily",
+        bucket: "2026-08-31T00:00:00Z",
+      });
+      assert.strictEqual(exactDimensions.length, 1);
     });
   });
 
