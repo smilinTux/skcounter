@@ -45,7 +45,7 @@ EXECUTABLE_SOURCE = frozenset(
         "edge/skcounter_schedule.py",
     }
 )
-RUNTIME_CURRENT = "%h/.local/lib/skcounter-runtime/current"
+RUNTIME_CURRENT = "%h/.local/lib/skcounter-collector/current"
 COLLECTOR_UNIT = f"""[Unit]
 Description=SKCounter central aggregate collector
 After=network-online.target

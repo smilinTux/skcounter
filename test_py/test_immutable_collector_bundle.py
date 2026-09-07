@@ -21,6 +21,13 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 BUILDER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILDER)
+PROMOTER_PATH = ROOT / "scripts" / "promote-immutable-collector.py"
+PROMOTER_SPEC = importlib.util.spec_from_file_location(
+    "immutable_collector_promoter", PROMOTER_PATH
+)
+assert PROMOTER_SPEC and PROMOTER_SPEC.loader
+PROMOTER = importlib.util.module_from_spec(PROMOTER_SPEC)
+PROMOTER_SPEC.loader.exec_module(PROMOTER)
 
 
 class ImmutableCollectorBundleTests(unittest.TestCase):
@@ -115,23 +122,27 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             artifact, _ = self.build(root / "build")
-            bundle = root / "bundle"
-            bundle.mkdir()
-            with tarfile.open(artifact) as archive:
-                archive.extractall(bundle, filter="data")
+            runtime_manifest = artifact.parent / f"{artifact.name}.runtime.json"
+            runtime_root = root / "runtime-root"
+            bundle, previous = PROMOTER.promote(
+                artifact, runtime_manifest, runtime_root
+            )
+            self.assertIsNone(previous)
+            current = runtime_root / "skcounter-collector" / "current"
+            self.assertEqual(current.resolve(), bundle)
             unit = (bundle / "units/skcounter-collector.service").read_text(
                 encoding="utf-8"
             )
-            self.assertIn("skcounter-runtime/current/bin/collector", unit)
+            self.assertIn("skcounter-collector/current/bin/collector", unit)
             self.assertNotIn(".local/lib/skcounter/services", unit)
             environment = {
                 "HOME": str(root / "home"),
-                "PATH": f"{bundle / 'runtime/bin'}:/usr/bin:/bin",
+                "PATH": f"{current / 'runtime/bin'}:/usr/bin:/bin",
                 "LANG": "C.UTF-8",
             }
             python_probe = subprocess.run(
                 [
-                    str(bundle / "runtime/bin/python3"),
+                    str(current / "runtime/bin/python3"),
                     "-c",
                     "import capauth.tokens,sys; assert not any('.local' in p for p in sys.path)",
                 ],
@@ -142,7 +153,7 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             )
             self.assertEqual(python_probe.returncode, 0, python_probe.stderr)
             gpg_probe = subprocess.run(
-                [str(bundle / "runtime/bin/gpg"), "--version"],
+                [str(current / "runtime/bin/gpg"), "--version"],
                 cwd=root,
                 env=environment,
                 capture_output=True,
@@ -152,8 +163,8 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             self.assertIn("GnuPG", gpg_probe.stdout)
             verifier_probe = subprocess.run(
                 [
-                    str(bundle / "runtime/bin/python3"),
-                    str(bundle / "source/services/capauth_verify.py"),
+                    str(current / "runtime/bin/python3"),
+                    str(current / "source/services/capauth_verify.py"),
                 ],
                 cwd=root,
                 env={**environment, "SKCOUNTER_CAPAUTH_HOME": str(root / "capauth")},
@@ -202,8 +213,8 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 "capauth": {
                     "home": str(root / "capauth"),
                     "gnupg_home": str(root / "gnupg"),
-                    "python": str(bundle / "runtime/bin/python3"),
-                    "verifier": str(bundle / "source/services/capauth_verify.py"),
+                    "python": str(current / "runtime/bin/python3"),
+                    "verifier": str(current / "source/services/capauth_verify.py"),
                 },
                 "trusted_issuers": {"TEST": {"enabled": False}},
                 "allowed_views": ["models", "daily", "hourly", "time_metrics"],
@@ -211,7 +222,7 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             config_path = root / "collector.json"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             process = subprocess.Popen(
-                [str(bundle / "bin/collector"), "serve", "--config", str(config_path)],
+                [str(current / "bin/collector"), "serve", "--config", str(config_path)],
                 cwd=root,
                 env=environment,
                 stdout=subprocess.DEVNULL,
@@ -246,11 +257,11 @@ catch (error) { if (error.code !== 'EEXIST') throw error; }
 """
                 replay_script = replay_script.replace(
                     "./services/collector.mjs",
-                    (bundle / "source/services/collector.mjs").as_uri(),
+                    (current / "source/services/collector.mjs").resolve().as_uri(),
                 )
                 replay = subprocess.run(
                     [
-                        str(bundle / "runtime/bin/node"),
+                        str(current / "runtime/bin/node"),
                         "--input-type=module",
                         "-",
                         str(state),
@@ -265,6 +276,20 @@ catch (error) { if (error.code !== 'EEXIST') throw error; }
             finally:
                 process.terminate()
                 process.wait(timeout=5)
+
+            prior = runtime_root / "skcounter-collector" / "versions" / "prior"
+            prior.mkdir()
+            current.unlink()
+            current.symlink_to(prior)
+
+            def fail_qualification(_promoted: Path) -> None:
+                raise RuntimeError("forced qualification failure")
+
+            with self.assertRaisesRegex(RuntimeError, "forced qualification failure"):
+                PROMOTER.promote(
+                    artifact, runtime_manifest, runtime_root, fail_qualification
+                )
+            self.assertEqual(current.resolve(), prior)
 
 
 if __name__ == "__main__":
