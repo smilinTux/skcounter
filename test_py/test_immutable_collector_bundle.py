@@ -54,17 +54,84 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 self.assertIn("source/services/capauth_verify.py", declared)
                 self.assertIn("source/edge/skcounter_edge.py", declared)
                 self.assertIn("source/package-lock.json", declared)
-                self.assertIn("runtime/node", declared)
-                self.assertIn("runtime/python3", declared)
-                self.assertTrue(any(name.startswith("runtime/python-environment/") for name in declared))
+                self.assertIn("runtime/bin/node", declared)
+                self.assertIn("runtime/bin/python3", declared)
+                self.assertIn("runtime/lib/ld-linux-x86-64.so.2", declared)
+                self.assertTrue(any(name.startswith("runtime/python/lib/") for name in declared))
+                self.assertIn("units/skcounter-collector.service", declared)
                 self.assertEqual(manifest["provenance"]["commit"], subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip())
                 for member in manifest["members"]:
                     payload = archive.extractfile(member["path"]).read()
                     self.assertEqual(member["sha256"], hashlib.sha256(payload).hexdigest())
+            runtime_manifest = json.loads(
+                (first.parent / f"{first.name}.runtime.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                set(runtime_manifest),
+                {
+                    "schema",
+                    "service",
+                    "repository",
+                    "commit",
+                    "tree",
+                    "runtime_kind",
+                    "artifacts",
+                    "dependency_lock",
+                    "configuration_digest",
+                    "unit_digest",
+                    "host",
+                    "health_probe",
+                    "rollback_artifact",
+                    "data_refs",
+                    "credential_refs",
+                },
+            )
+            self.assertEqual(runtime_manifest["schema"], "skfleet-service-runtime/v1")
+            self.assertEqual(runtime_manifest["runtime_kind"], "node-bundle")
+            self.assertEqual(runtime_manifest["rollback_artifact"], f"sha256:{first_hash}")
+            self.assertEqual(runtime_manifest["artifacts"][0]["digest"], f"sha256:{first_hash}")
 
     def test_isolated_replay_and_9398_health_compatibility(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            artifact, _ = self.build(root / "build")
+            bundle = root / "bundle"
+            bundle.mkdir()
+            with tarfile.open(artifact) as archive:
+                archive.extractall(bundle, filter="data")
+            unit = (bundle / "units/skcounter-collector.service").read_text(encoding="utf-8")
+            self.assertIn("skcounter-runtime/current/bin/collector", unit)
+            self.assertNotIn(".local/lib/skcounter/services", unit)
+            environment = {
+                "HOME": str(root / "home"),
+                "PATH": f"{bundle / 'runtime/bin'}:/usr/bin:/bin",
+                "LANG": "C.UTF-8",
+            }
+            python_probe = subprocess.run(
+                [
+                    str(bundle / "runtime/bin/python3"),
+                    "-c",
+                    "import capauth.tokens,sys; assert not any('.local' in p for p in sys.path)",
+                ],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(python_probe.returncode, 0, python_probe.stderr)
+            verifier_probe = subprocess.run(
+                [
+                    str(bundle / "runtime/bin/python3"),
+                    str(bundle / "source/services/capauth_verify.py"),
+                ],
+                cwd=root,
+                env={**environment, "SKCOUNTER_CAPAUTH_HOME": str(root / "capauth")},
+                input="e30",
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(verifier_probe.returncode, 1)
+            self.assertEqual(json.loads(verifier_probe.stdout)["reason"], "token_format")
             state = root / "state"
             tls = root / "tls"
             tls.mkdir()
@@ -81,14 +148,21 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 "port": 9398,
                 "state_dir": str(state),
                 "tls": {"cert_file": str(cert), "key_file": str(key)},
-                "capauth": {"home": str(root / "capauth"), "gnupg_home": str(root / "gnupg")},
+                "capauth": {
+                    "home": str(root / "capauth"),
+                    "gnupg_home": str(root / "gnupg"),
+                    "python": str(bundle / "runtime/bin/python3"),
+                    "verifier": str(bundle / "source/services/capauth_verify.py"),
+                },
                 "trusted_issuers": {"TEST": {"enabled": False}},
                 "allowed_views": ["models", "daily", "hourly", "time_metrics"],
             }
             config_path = root / "collector.json"
             config_path.write_text(json.dumps(config), encoding="utf-8")
             process = subprocess.Popen(
-                ["node", str(ROOT / "services" / "collector.mjs"), "serve", "--config", str(config_path)],
+                [str(bundle / "bin/collector"), "serve", "--config", str(config_path)],
+                cwd=root,
+                env=environment,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -114,7 +188,18 @@ store.reserveReplay('11111111111111111111111111111111');
 try { store.reserveReplay('11111111111111111111111111111111'); process.exit(3); }
 catch (error) { if (error.code !== 'EEXIST') throw error; }
 """
-                replay = subprocess.run(["node", "--input-type=module", "-", str(state)], cwd=ROOT, input=replay_script, text=True, capture_output=True)
+                replay_script = replay_script.replace(
+                    "./services/collector.mjs",
+                    (bundle / "source/services/collector.mjs").as_uri(),
+                )
+                replay = subprocess.run(
+                    [str(bundle / "runtime/bin/node"), "--input-type=module", "-", str(state)],
+                    cwd=root,
+                    env=environment,
+                    input=replay_script,
+                    text=True,
+                    capture_output=True,
+                )
                 self.assertEqual(replay.returncode, 0, replay.stderr)
             finally:
                 process.terminate()
