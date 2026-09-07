@@ -201,7 +201,7 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                     "subjectAltName=IP:127.0.0.1",
                 ],
                 check=True,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
             )
             config = {
@@ -245,8 +245,11 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
 
                         time.sleep(0.05)
                 else:
-                    _stdout, stderr = process.communicate(timeout=1)
-                    self.fail(f"collector did not become healthy on 9398: {stderr}")
+                    stdout, stderr = process.communicate(timeout=1)
+                    self.fail(
+                        f"collector did not become healthy on 9398: "
+                        f"exit={process.returncode} stdout={stdout} stderr={stderr}"
+                    )
                 self.assertEqual(health["status"], "ok")
                 self.assertEqual(health["schema_version"], "skcounter.health.v1")
                 replay_script = """
