@@ -247,7 +247,7 @@ def collect(
     add_bytes(
         files,
         "bin/collector",
-        b'#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/runtime/bin/node" "$root/source/services/collector.mjs" "$@"\n',
+        b'#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -P -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/runtime/bin/node" "$root/source/services/collector.mjs" "$@"\n',
         "entrypoint",
         0o755,
     )

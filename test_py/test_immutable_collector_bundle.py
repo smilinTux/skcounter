@@ -201,7 +201,7 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                     "subjectAltName=IP:127.0.0.1",
                 ],
                 check=True,
-                stdout=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
             config = {
@@ -225,7 +225,7 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 [str(current / "bin/collector"), "serve", "--config", str(config_path)],
                 cwd=root,
                 env=environment,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
             )
