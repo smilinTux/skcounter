@@ -137,6 +137,15 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(python_probe.returncode, 0, python_probe.stderr)
+            gpg_probe = subprocess.run(
+                [str(bundle / "runtime/bin/gpg"), "--version"],
+                cwd=root,
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(gpg_probe.returncode, 0, gpg_probe.stderr)
+            self.assertIn("GnuPG", gpg_probe.stdout)
             verifier_probe = subprocess.run(
                 [
                     str(bundle / "runtime/bin/python3"),
