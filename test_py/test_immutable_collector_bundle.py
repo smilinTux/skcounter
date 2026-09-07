@@ -107,6 +107,10 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 runtime_manifest["artifacts"][0]["digest"], f"sha256:{first_hash}"
             )
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("capauth") is not None,
+        "artifact replay qualification requires the CapAuth verifier dependency",
+    )
     def test_isolated_replay_and_9398_health_compatibility(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
