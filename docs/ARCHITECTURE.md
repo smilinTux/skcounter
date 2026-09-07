@@ -1,5 +1,7 @@
 # SKCounter cluster architecture
 
+> The general collection-plane design and current central placement are defined in [SK telemetry and evidence collector architecture](./TELEMETRY-COLLECTOR-ARCHITECTURE.md). This document remains the SKCounter producer-specific architecture.
+
 ## Decision
 
 Use edge collection with aggregate push. Install SKCounter on every harness-capable cluster node, run it once per authorized harness principal, and push normalized snapshots to one governed collector. Use central pull only for health, version, and rollout status.
