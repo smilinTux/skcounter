@@ -152,7 +152,9 @@ def python_distributions() -> list[importlib.metadata.Distribution]:
         try:
             distribution = importlib.metadata.distribution(name)
         except importlib.metadata.PackageNotFoundError as exc:
-            raise SystemExit(f"required Python distribution is missing: {name}") from exc
+            raise SystemExit(
+                f"required Python distribution is missing: {name}"
+            ) from exc
         found[key] = distribution
         for requirement in distribution.requires or ():
             parsed = Requirement(requirement)
@@ -183,7 +185,11 @@ def python_runtime_files() -> tuple[list[tuple[str, Path]], list[Path]]:
     for distribution in python_distributions():
         for item in distribution.files or ():
             path = Path(distribution.locate_file(item)).resolve()
-            if not path.is_file() or path.suffix == ".pyc" or "__pycache__" in path.parts:
+            if (
+                not path.is_file()
+                or path.suffix == ".pyc"
+                or "__pycache__" in path.parts
+            ):
                 continue
             relative = next(
                 (path.relative_to(root) for root in roots if path.is_relative_to(root)),
@@ -191,7 +197,9 @@ def python_runtime_files() -> tuple[list[tuple[str, Path]], list[Path]]:
             )
             if relative is None:
                 continue
-            logical = f"runtime/python/lib/{version}/site-packages/{relative.as_posix()}"
+            logical = (
+                f"runtime/python/lib/{version}/site-packages/{relative.as_posix()}"
+            )
             result.append((logical, path))
             if path.suffix == ".so":
                 native.append(path)
@@ -201,8 +209,8 @@ def python_runtime_files() -> tuple[list[tuple[str, Path]], list[Path]]:
 def runtime_wrapper(real_name: str, *, python: bool = False) -> bytes:
     version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     setup = (
-        "export PYTHONHOME=\"$root/python\" PYTHONNOUSERSITE=1 "
-        f"PYTHONPATH=\"$root/python/lib/{version}/site-packages\"\n"
+        'export PYTHONHOME="$root/python" PYTHONNOUSERSITE=1 '
+        f'PYTHONPATH="$root/python/lib/{version}/site-packages"\n'
         if python
         else ""
     )
@@ -210,10 +218,10 @@ def runtime_wrapper(real_name: str, *, python: bool = False) -> bytes:
     return (
         "#!/bin/sh\n"
         "set -eu\n"
-        "root=$(CDPATH= cd -- \"$(dirname -- \"$0\")/..\" && pwd)\n"
+        'root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\n'
         f"{setup}"
-        "exec \"$root/lib/ld-linux-x86-64.so.2\" --library-path \"$root/lib\" "
-        f"\"$root/bin/{real_name}\"{isolated} \"$@\"\n"
+        'exec "$root/lib/ld-linux-x86-64.so.2" --library-path "$root/lib" '
+        f'"$root/bin/{real_name}"{isolated} "$@"\n'
     ).encode()
 
 
@@ -226,9 +234,23 @@ def collect(
         add_file(files, f"source/{member}", repo / member, "source", mode)
 
     configuration = canonical(CONFIG_TEMPLATE)
-    add_bytes(files, "configuration/collector.template.json", configuration, "configuration", 0o600)
-    add_bytes(files, "units/skcounter-collector.service", COLLECTOR_UNIT.encode(), "unit")
-    add_bytes(files, "bin/collector", b'#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/runtime/bin/node" "$root/source/services/collector.mjs" "$@"\n', "entrypoint", 0o755)
+    add_bytes(
+        files,
+        "configuration/collector.template.json",
+        configuration,
+        "configuration",
+        0o600,
+    )
+    add_bytes(
+        files, "units/skcounter-collector.service", COLLECTOR_UNIT.encode(), "unit"
+    )
+    add_bytes(
+        files,
+        "bin/collector",
+        b'#!/bin/sh\nset -eu\nroot=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)\nexec "$root/runtime/bin/node" "$root/source/services/collector.mjs" "$@"\n',
+        "entrypoint",
+        0o755,
+    )
 
     executables = {
         "node.real": node.resolve(),
@@ -238,7 +260,13 @@ def collect(
     for name, path in executables.items():
         add_file(files, f"runtime/bin/{name}", path, "runtime", 0o755)
     add_bytes(files, "runtime/bin/node", runtime_wrapper("node.real"), "runtime", 0o755)
-    add_bytes(files, "runtime/bin/python3", runtime_wrapper("python3.real", python=True), "runtime", 0o755)
+    add_bytes(
+        files,
+        "runtime/bin/python3",
+        runtime_wrapper("python3.real", python=True),
+        "runtime",
+        0o755,
+    )
     add_bytes(files, "runtime/bin/gpg", runtime_wrapper("gpg.real"), "runtime", 0o755)
 
     python_files, python_native = python_runtime_files()
@@ -357,7 +385,9 @@ def build(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--repo", type=Path, default=Path(__file__).resolve().parents[1]
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-ref", default="HEAD")
     parser.add_argument("--node", type=Path, default=Path(shutil.which("node") or ""))
@@ -365,9 +395,16 @@ def main() -> int:
     parser.add_argument("--gpg", type=Path, default=Path(shutil.which("gpg") or ""))
     args = parser.parse_args()
     artifact, artifact_hash = build(
-        args.repo.resolve(), args.output.resolve(), args.source_ref, args.node, args.python, args.gpg
+        args.repo.resolve(),
+        args.output.resolve(),
+        args.source_ref,
+        args.node,
+        args.python,
+        args.gpg,
     )
-    print(json.dumps({"artifact": str(artifact), "sha256": artifact_hash}, sort_keys=True))
+    print(
+        json.dumps({"artifact": str(artifact), "sha256": artifact_hash}, sort_keys=True)
+    )
     return 0
 
 

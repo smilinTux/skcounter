@@ -13,10 +13,11 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 BUILDER_PATH = ROOT / "scripts" / "build-immutable-collector.py"
-SPEC = importlib.util.spec_from_file_location("immutable_collector_builder", BUILDER_PATH)
+SPEC = importlib.util.spec_from_file_location(
+    "immutable_collector_builder", BUILDER_PATH
+)
 assert SPEC and SPEC.loader
 BUILDER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILDER)
@@ -57,14 +58,25 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 self.assertIn("runtime/bin/node", declared)
                 self.assertIn("runtime/bin/python3", declared)
                 self.assertIn("runtime/lib/ld-linux-x86-64.so.2", declared)
-                self.assertTrue(any(name.startswith("runtime/python/lib/") for name in declared))
+                self.assertTrue(
+                    any(name.startswith("runtime/python/lib/") for name in declared)
+                )
                 self.assertIn("units/skcounter-collector.service", declared)
-                self.assertEqual(manifest["provenance"]["commit"], subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip())
+                self.assertEqual(
+                    manifest["provenance"]["commit"],
+                    subprocess.check_output(
+                        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+                    ).strip(),
+                )
                 for member in manifest["members"]:
                     payload = archive.extractfile(member["path"]).read()
-                    self.assertEqual(member["sha256"], hashlib.sha256(payload).hexdigest())
+                    self.assertEqual(
+                        member["sha256"], hashlib.sha256(payload).hexdigest()
+                    )
             runtime_manifest = json.loads(
-                (first.parent / f"{first.name}.runtime.json").read_text(encoding="utf-8")
+                (first.parent / f"{first.name}.runtime.json").read_text(
+                    encoding="utf-8"
+                )
             )
             self.assertEqual(
                 set(runtime_manifest),
@@ -88,8 +100,12 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             )
             self.assertEqual(runtime_manifest["schema"], "skfleet-service-runtime/v1")
             self.assertEqual(runtime_manifest["runtime_kind"], "node-bundle")
-            self.assertEqual(runtime_manifest["rollback_artifact"], f"sha256:{first_hash}")
-            self.assertEqual(runtime_manifest["artifacts"][0]["digest"], f"sha256:{first_hash}")
+            self.assertEqual(
+                runtime_manifest["rollback_artifact"], f"sha256:{first_hash}"
+            )
+            self.assertEqual(
+                runtime_manifest["artifacts"][0]["digest"], f"sha256:{first_hash}"
+            )
 
     def test_isolated_replay_and_9398_health_compatibility(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -99,7 +115,9 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             bundle.mkdir()
             with tarfile.open(artifact) as archive:
                 archive.extractall(bundle, filter="data")
-            unit = (bundle / "units/skcounter-collector.service").read_text(encoding="utf-8")
+            unit = (bundle / "units/skcounter-collector.service").read_text(
+                encoding="utf-8"
+            )
             self.assertIn("skcounter-runtime/current/bin/collector", unit)
             self.assertNotIn(".local/lib/skcounter/services", unit)
             environment = {
@@ -131,17 +149,37 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(verifier_probe.returncode, 1)
-            self.assertEqual(json.loads(verifier_probe.stdout)["reason"], "token_format")
+            self.assertEqual(
+                json.loads(verifier_probe.stdout)["reason"], "token_format"
+            )
             state = root / "state"
             tls = root / "tls"
             tls.mkdir()
             cert = tls / "collector.crt"
             key = tls / "collector.key"
-            subprocess.run([
-                "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                "-keyout", str(key), "-out", str(cert), "-days", "1",
-                "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-keyout",
+                    str(key),
+                    "-out",
+                    str(cert),
+                    "-days",
+                    "1",
+                    "-subj",
+                    "/CN=127.0.0.1",
+                    "-addext",
+                    "subjectAltName=IP:127.0.0.1",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             config = {
                 "schema_version": "skcounter.collector.config.v1",
                 "bind_host": "127.0.0.1",
@@ -171,11 +209,16 @@ class ImmutableCollectorBundleTests(unittest.TestCase):
             try:
                 for _ in range(50):
                     try:
-                        with urllib.request.urlopen("https://127.0.0.1:9398/healthz", context=context, timeout=0.2) as response:
+                        with urllib.request.urlopen(
+                            "https://127.0.0.1:9398/healthz",
+                            context=context,
+                            timeout=0.2,
+                        ) as response:
                             health = json.load(response)
                         break
                     except OSError:
                         import time
+
                         time.sleep(0.05)
                 else:
                     self.fail("collector did not become healthy on 9398")
@@ -193,7 +236,12 @@ catch (error) { if (error.code !== 'EEXIST') throw error; }
                     (bundle / "source/services/collector.mjs").as_uri(),
                 )
                 replay = subprocess.run(
-                    [str(bundle / "runtime/bin/node"), "--input-type=module", "-", str(state)],
+                    [
+                        str(bundle / "runtime/bin/node"),
+                        "--input-type=module",
+                        "-",
+                        str(state),
+                    ],
                     cwd=root,
                     env=environment,
                     input=replay_script,
