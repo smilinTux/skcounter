@@ -16,7 +16,8 @@ Per node (over SSH, or locally for this host) it syncs this checkout, ensures
 Node.js >= 20, runs ``install-user.sh`` and ``install-runtime.sh edge``,
 provisions the edge signing identity, writes ``edge.json`` pointing at the
 collector, and enables the timer on harness nodes (label ``pi-harness=true`` or
-``skcode-harness``; others get a passive install, see docs/ARCHITECTURE.md).
+``--passive`` opts a node out: by default every fleet node reports, and a node
+with no harness truthfully reports zero usage).
 On the collector it installs the runtime and TLS, imports every edge public
 key into the verifier keyring, merges ``trusted_issuers`` and restarts.
 """
@@ -47,7 +48,7 @@ EDGE_SCRIPT = r"""
 set -euo pipefail
 collector_url=$1; node_id=$2; harness=$3
 src="$HOME/.local/src/skcounter"
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.skenv/bin:$PATH"  # skenv python has capauth (edge + tests need it)
 cd "$src"
 if ! command -v node >/dev/null || ! node -e 'process.exit(Number(process.versions.node.split(".")[0])<20?1:0)'; then
   ./scripts/install-node-user.sh >/dev/null
@@ -123,8 +124,19 @@ def tailscale_ipv4() -> str:
     return out[0] if out else ""
 
 
+def _tool_env() -> dict:
+    """PATH with ~/.local/bin and ~/.skenv/bin first: the edge and the test suite
+    need a python3 that can import capauth, which on SK nodes lives in ~/.skenv."""
+    env = dict(os.environ)
+    env["PATH"] = f"{HOME}/.local/bin:{HOME}/.skenv/bin:" + env.get("PATH", "")
+    return env
+
+
 def ensure_collector(bind_ip: str) -> Path:
-    run([str(REPO / "scripts" / "install-user.sh")])
+    install = subprocess.run([str(REPO / "scripts" / "install-user.sh")], env=_tool_env(),
+                             text=True, capture_output=True)
+    if install.returncode != 0:
+        raise SystemExit("collector install-user.sh failed:\n" + (install.stdout + install.stderr)[-1500:])
     run([str(REPO / "scripts" / "install-runtime.sh"), "collector"])
     run([str(REPO / "scripts" / "provision-collector-tls.sh"), bind_ip, str(TLS_DIR)])
     for sub in ("capauth", "capauth-gnupg"):
@@ -173,11 +185,17 @@ def main() -> None:
     parser.add_argument("--bind-ip", default="", help="collector address (default: tailscale IPv4)")
     parser.add_argument("--node", action="append", help="limit to these node ids")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--passive", action="append", default=[],
+                        help="node ids to install without a timer (default: every node reports)")
     args = parser.parse_args()
 
     nodes = fleet_nodes(args.fleet_home)
     if args.node:
         nodes = [node for node in nodes if node["node_id"] in set(args.node)]
+    for node in nodes:
+        # Every fleet node reports (a node with no harness truthfully reports zero),
+        # so dashboard coverage over all fleet nodes is meaningful.
+        node["harness"] = node["node_id"] not in set(args.passive)
     if not nodes:
         sys.exit("no fleet nodes found; admit nodes with `skcapstone fleet admit` first")
     bind_ip = args.bind_ip or tailscale_ipv4()
