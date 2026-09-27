@@ -25,6 +25,7 @@ key into the verifier keyring, merges ``trusted_issuers`` and restarts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -70,6 +71,16 @@ def pinned_revision() -> str:
     return revision
 
 
+INSTALL_PATHS = ("bin", "src", "services", "edge", "test", "test_py", "package.json",
+                 "package-lock.json", "scripts/build-immutable-collector.py")
+
+
+def install_key() -> str:
+    """Hash of the trees install-user.sh builds and tests (same formula as the edge)."""
+    trees = run(["git", "-C", str(REPO), "rev-parse", *[f"HEAD:{p}" for p in INSTALL_PATHS]]).stdout
+    return hashlib.sha256(trees.encode()).hexdigest()
+
+
 # Runs on each edge node as its harness user. Arguments: collector_url node_id harness.
 EDGE_SCRIPT = r"""
 set -euo pipefail
@@ -82,7 +93,9 @@ if ! command -v node >/dev/null || ! node -e 'process.exit(Number(process.versio
 fi
 state="$HOME/.local/state/skcounter"
 install -d -m 0700 "$state" "$HOME/.config/skcounter"
-revision=$(git rev-parse HEAD)
+# Key on the code install-user.sh builds and tests, not HEAD, so a change to
+# this script or the unit files does not rerun the ~17 minute suite.
+revision=$(git rev-parse HEAD:bin HEAD:src HEAD:services HEAD:edge HEAD:test HEAD:test_py HEAD:package.json HEAD:package-lock.json HEAD:scripts/build-immutable-collector.py | sha256sum | cut -c1-64)
 # install-user.sh runs the full test suite; skip it when this exact revision
 # already installed and passed on this node.
 if [ "$(cat "$state/installed-revision" 2>/dev/null)" != "$revision" ] || [ ! -x "$HOME/.local/bin/skcounter" ]; then
@@ -167,7 +180,8 @@ def _tool_env() -> dict:
 
 def ensure_collector(bind_ip: str) -> Path:
     marker = COLLECTOR_STATE / "installed-revision"
-    revision = pinned_revision()
+    pinned_revision()  # refuses a dirty or unpushed checkout
+    revision = install_key()
     if not marker.exists() or marker.read_text().strip() != revision:
         install = subprocess.run([str(REPO / "scripts" / "install-user.sh")], env=_tool_env(),
                                  text=True, capture_output=True)
