@@ -39,6 +39,7 @@ CONFIG_DIR = HOME / ".config" / "skcounter"
 COLLECTOR_CONFIG = CONFIG_DIR / "collector.json"
 COLLECTOR_STATE = HOME / ".local" / "state" / "skcounter-collector"
 TLS_DIR = CONFIG_DIR / "tls"
+DASHBOARD_DATA = HOME / ".local" / "state" / "skcounter"
 PORT = 9398
 REMOTE_SRC = "$HOME/.local/src/skcounter"
 HARNESS_LABELS = ("pi-harness", "skcode-harness")
@@ -290,7 +291,13 @@ def main() -> None:
         run(["systemctl", "--user", "enable", "skcounter-collector.service"])
         run(["systemctl", "--user", "restart", "skcounter-collector.service"])
         print(f"collector trusts {len(issuers)} edge identities; restarted")
-    print(f"dashboard: SKCOUNTER_DATA_DIR={COLLECTOR_STATE}")
+        # SKDashboard reads acknowledged snapshots from <edge state>/sent/; the
+        # projection copies every accepted fleet observation there each minute.
+        (DASHBOARD_DATA / "sent").mkdir(parents=True, exist_ok=True)
+        os.chmod(DASHBOARD_DATA, 0o700)
+        run(["systemctl", "--user", "enable", "--now", "skcounter-dashboard-projection.timer"])
+        run(["systemctl", "--user", "start", "skcounter-dashboard-projection.service"])
+    print(f"dashboard: SKCOUNTER_DATA_DIR={DASHBOARD_DATA}")
     if failures:
         sys.exit("some nodes failed:\n  " + "\n  ".join(failures))
 
