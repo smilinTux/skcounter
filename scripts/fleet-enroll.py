@@ -79,17 +79,23 @@ cd "$src"
 if ! command -v node >/dev/null || ! node -e 'process.exit(Number(process.versions.node.split(".")[0])<20?1:0)'; then
   ./scripts/install-node-user.sh >/dev/null
 fi
-./scripts/install-user.sh >/tmp/skcounter-install.$$.log 2>&1 || { tail -20 /tmp/skcounter-install.$$.log; exit 1; }
-rm -f /tmp/skcounter-install.$$.log
-./scripts/install-runtime.sh edge >/dev/null
 state="$HOME/.local/state/skcounter"
 install -d -m 0700 "$state" "$HOME/.config/skcounter"
+revision=$(git rev-parse HEAD)
+# install-user.sh runs the full test suite; skip it when this exact revision
+# already installed and passed on this node.
+if [ "$(cat "$state/installed-revision" 2>/dev/null)" != "$revision" ] || [ ! -x "$HOME/.local/bin/skcounter" ]; then
+  ./scripts/install-user.sh >/tmp/skcounter-install.$$.log 2>&1 || { tail -20 /tmp/skcounter-install.$$.log; exit 1; }
+  rm -f /tmp/skcounter-install.$$.log
+  printf '%s\n' "$revision" > "$state/installed-revision"
+fi
+./scripts/install-runtime.sh edge >/dev/null
 ./scripts/provision-edge-identity.sh "$state/capauth" "$state/capauth-gnupg" "$node_id" "$USER" "$state/public.asc" >/dev/null
 install -m 0600 /dev/stdin "$HOME/.config/skcounter/collector-ca.crt"
 cat > "$HOME/.config/skcounter/edge.json.tmp" <<JSON
 {
   "schema_version": "skcounter.edge.config.v1",
-  "collector_url": "$collector_url",
+  "collector_url": "$collector_url/v1/observations",
   "ca_file": "$HOME/.config/skcounter/collector-ca.crt",
   "state_dir": "$state",
   "skcounter_bin": "$HOME/.local/bin/skcounter",
@@ -159,10 +165,15 @@ def _tool_env() -> dict:
 
 
 def ensure_collector(bind_ip: str) -> Path:
-    install = subprocess.run([str(REPO / "scripts" / "install-user.sh")], env=_tool_env(),
-                             text=True, capture_output=True)
-    if install.returncode != 0:
-        raise SystemExit("collector install-user.sh failed:\n" + (install.stdout + install.stderr)[-1500:])
+    marker = COLLECTOR_STATE / "installed-revision"
+    revision = pinned_revision()
+    if not marker.exists() or marker.read_text().strip() != revision:
+        install = subprocess.run([str(REPO / "scripts" / "install-user.sh")], env=_tool_env(),
+                                 text=True, capture_output=True)
+        if install.returncode != 0:
+            raise SystemExit("collector install-user.sh failed:\n" + (install.stdout + install.stderr)[-1500:])
+        COLLECTOR_STATE.mkdir(parents=True, exist_ok=True)
+        marker.write_text(revision + "\n")
     run([str(REPO / "scripts" / "install-runtime.sh"), "collector"])
     run([str(REPO / "scripts" / "provision-collector-tls.sh"), bind_ip, str(TLS_DIR)])
     for sub in ("capauth", "capauth-gnupg"):
