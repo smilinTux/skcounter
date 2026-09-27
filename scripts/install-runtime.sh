@@ -25,6 +25,8 @@ install -m 0644 "$repo_root/edge/__init__.py" "$runtime_root/edge/__init__.py"
 
 if [ "$role" = "collector" ] || [ "$role" = "all" ]; then
   install -m 0644 "$repo_root/deploy/systemd/skcounter-collector.service" "$unit_root/skcounter-collector.service"
+  install -m 0644 "$repo_root/deploy/systemd/skcounter-dashboard-projection.service" "$unit_root/skcounter-dashboard-projection.service"
+  install -m 0644 "$repo_root/deploy/systemd/skcounter-dashboard-projection.timer" "$unit_root/skcounter-dashboard-projection.timer"
 fi
 if [ "$role" = "edge" ] || [ "$role" = "all" ]; then
   install -m 0644 "$repo_root/deploy/systemd/skcounter-edge.service" "$unit_root/skcounter-edge.service"
