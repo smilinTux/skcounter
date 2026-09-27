@@ -43,6 +43,32 @@ PORT = 9398
 REMOTE_SRC = "$HOME/.local/src/skcounter"
 HARNESS_LABELS = ("pi-harness", "skcode-harness")
 
+ORIGIN = "https://github.com/smilinTux/skcounter.git"
+
+# A real git checkout pinned to this exact commit: the test suite (bundle build)
+# needs git metadata and a clean tree, and every node runs identical code.
+SYNC_SCRIPT = r"""
+set -euo pipefail
+origin=$1; revision=$2; src="$HOME/.local/src/skcounter"
+if [ ! -d "$src/.git" ]; then rm -rf "$src"; git clone -q "$origin" "$src"; fi
+git -C "$src" fetch -q origin
+git -C "$src" checkout -q --detach "$revision"
+git -C "$src" reset -q --hard "$revision"
+git -C "$src" clean -qfdx -e node_modules
+"""
+
+
+def pinned_revision() -> str:
+    """This checkout's HEAD; it must be clean and pushed so nodes can fetch it."""
+    if run(["git", "-C", str(REPO), "status", "--porcelain"]).stdout.strip():
+        sys.exit("commit your changes first: nodes install the pinned commit, not a dirty tree")
+    revision = run(["git", "-C", str(REPO), "rev-parse", "HEAD"]).stdout.strip()
+    contains = run(["git", "-C", str(REPO), "branch", "-r", "--contains", revision], check=False).stdout
+    if not contains.strip():
+        sys.exit(f"push {revision[:10]} first: nodes fetch it from {ORIGIN}")
+    return revision
+
+
 # Runs on each edge node as its harness user. Arguments: collector_url node_id harness.
 EDGE_SCRIPT = r"""
 set -euo pipefail
@@ -151,17 +177,13 @@ def enroll_edge(node: dict, collector_url: str, ca_pem: str) -> str:
     args = [collector_url, node["node_id"], "1" if node["harness"] else "0"]
     local = is_local(node)
     if local:
-        target_src = HOME / ".local" / "src" / "skcounter"
-        target_src.parent.mkdir(parents=True, exist_ok=True)
-        run(["rsync", "-a", "--delete", "--exclude", "node_modules", "--exclude", ".git",
-             f"{REPO}/", f"{target_src}/"])
+        run(["bash", "-c", SYNC_SCRIPT, "sync", ORIGIN, pinned_revision()])
         # The CA certificate travels on stdin, the script on the command line.
         proc = run(["bash", "-c", EDGE_SCRIPT, "edge", *args], input_text=ca_pem, check=False)
     else:
         host = node["address"]
-        run(["ssh", "-o", "BatchMode=yes", host, "mkdir -p ~/.local/src/skcounter"])
-        run(["rsync", "-a", "--delete", "--exclude", "node_modules", "--exclude", ".git",
-             f"{REPO}/", f"{host}:.local/src/skcounter/"])
+        sync = "bash -c " + shlex.quote(SYNC_SCRIPT) + " sync " + shlex.quote(ORIGIN) + " " + pinned_revision()
+        run(["ssh", "-o", "BatchMode=yes", host, sync])
         remote = "bash -c " + shlex.quote(EDGE_SCRIPT) + " edge " + " ".join(map(shlex.quote, args))
         proc = run(["ssh", "-o", "BatchMode=yes", host, remote], input_text=ca_pem, check=False)
     if proc.returncode != 0:
@@ -202,7 +224,7 @@ def main() -> None:
     if not bind_ip:
         sys.exit("could not determine the collector IP; pass --bind-ip")
     collector_url = f"https://{bind_ip}:{PORT}"
-    print(f"collector {collector_url}")
+    print(f"collector {collector_url}  skcounter {pinned_revision()[:10]}")
     for node in nodes:
         where = "local" if is_local(node) else node["address"]
         print(f"  {node['node_id']:12s} {where:16s} {'timer' if node['harness'] else 'passive'}")
