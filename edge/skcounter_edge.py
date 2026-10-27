@@ -31,6 +31,13 @@ class EdgeError(RuntimeError):
     """An expected edge collection or delivery failure."""
 
 
+class PoisonObservation(EdgeError):
+    """An outbox observation that can never be delivered (truncated, malformed,
+    wrong schema or identity). Retrying it forever only wedges the edge, so it is
+    moved to ``quarantine/`` for inspection instead of being counted as failed on
+    every run."""
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -111,13 +118,16 @@ def _collect(config: dict[str, Any], outbox: Path) -> None:
         "SKCOUNTER_NODE_ID": str(config["node_id"]),
         "SKCOUNTER_PRINCIPAL_ID": str(config["principal_id"]),
     }
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=int(config.get("collection_timeout_seconds", 120)),
-        env=environment,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=int(config.get("collection_timeout_seconds", 120)),
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise EdgeError("local aggregate collection timed out") from exc
     if result.returncode != 0:
         raise EdgeError("local aggregate collection failed")
 
@@ -138,14 +148,14 @@ def _read_observation(path: Path) -> tuple[bytes, dict[str, Any]]:
         raise EdgeError("outbox observation permissions are not private")
     size = path.stat().st_size
     if size < 2 or size > MAX_OBSERVATION_BYTES:
-        raise EdgeError("outbox observation size is invalid")
+        raise PoisonObservation("outbox observation size is invalid")
     body = path.read_bytes()
     try:
         observation = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise EdgeError("outbox observation is malformed") from exc
-    if observation.get("schema_version") != "skcounter.snapshot.v1":
-        raise EdgeError("outbox observation schema is unsupported")
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise PoisonObservation("outbox observation is malformed") from exc
+    if not isinstance(observation, dict) or observation.get("schema_version") != "skcounter.snapshot.v1":
+        raise PoisonObservation("outbox observation schema is unsupported")
     return body, observation
 
 
@@ -162,14 +172,14 @@ def _post(
         observation.get("node_id") != config["node_id"]
         or observation.get("principal_id") != config["principal_id"]
     ):
-        raise EdgeError("outbox observation identity does not match edge config")
+        raise PoisonObservation("outbox observation identity does not match edge config")
     if observation.get("measurement_lane") != config.get(
         "measurement_lane", "harness_reported"
     ):
-        raise EdgeError("outbox observation lane does not match edge config")
+        raise PoisonObservation("outbox observation lane does not match edge config")
     idempotency_key = observation.get("idempotency_key")
     if not isinstance(idempotency_key, str) or len(idempotency_key) != 64:
-        raise EdgeError("outbox observation idempotency key is invalid")
+        raise PoisonObservation("outbox observation idempotency key is invalid")
     request = urllib.request.Request(
         str(config["collector_url"]),
         data=body,
@@ -222,6 +232,24 @@ def _archive(path: Path, sent_root: Path, observation: dict[str, Any]) -> None:
         os.replace(path, destination)
         destination.chmod(0o600)
     return destination
+
+
+def _quarantine(path: Path, outbox: Path, quarantine_root: Path, reason: str) -> None:
+    """Move an undeliverable observation out of the outbox, keeping it for review."""
+    try:
+        relative = path.relative_to(outbox)
+    except ValueError:
+        relative = Path(path.name)
+    destination = quarantine_root / relative
+    _private_dir(destination.parent)
+    if destination.exists():
+        destination = destination.with_name(f"{destination.name}.{secrets.token_hex(4)}")
+    os.replace(path, destination)
+    destination.chmod(0o600)
+    print(
+        f"SKCounter edge quarantined {relative}: {reason}",
+        file=sys.stderr,
+    )
 
 
 def _update_latest_index(
@@ -381,6 +409,8 @@ def run_once(
 
         acknowledged = 0
         failed = 0
+        quarantined = 0
+        quarantine_root = state_dir / "quarantine"
         for path in _observation_files(outbox):
             try:
                 body, observation = _read_observation(path)
@@ -404,10 +434,15 @@ def run_once(
                             # Index update failure is non-fatal; log but continue
                             pass
                         break
+                    except PoisonObservation:
+                        raise
                     except EdgeError:
                         if not delays:
                             raise
                         time.sleep(float(delays.pop(0)))
+            except PoisonObservation as exc:
+                _quarantine(path, outbox, quarantine_root, str(exc))
+                quarantined += 1
             except EdgeError:
                 failed += 1
 
@@ -419,6 +454,7 @@ def run_once(
             "principal_id": config["principal_id"],
             "acknowledged": acknowledged,
             "failed": failed,
+            "quarantined": quarantined,
             "pending": len(_observation_files(outbox)),
             "sent_pruned": pruned,
             "collection_ok": collection_error is None,

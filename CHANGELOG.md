@@ -5,6 +5,7 @@
 - Add the bounded append-only latest-observation index for reconciled SKCounter reads.
 - Add deterministic content-addressed collector bundles with complete source, dependency, runtime, configuration, and provenance manifests plus isolated replay and port 9398 health qualification.
 - Preserve exact observation dimensions and valid records around malformed index lines.
+- Quarantine undeliverable edge observations (truncated, malformed, wrong schema or identity) instead of failing every run, write observations atomically, treat a collect timeout as a normal edge failure, and file one GTD item per failure incident (after 3 consecutive failed runs) instead of one per hour.
 
 All notable changes to SKCounter are documented here.
 
