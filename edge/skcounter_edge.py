@@ -31,6 +31,11 @@ class EdgeError(RuntimeError):
     """An expected edge collection or delivery failure."""
 
 
+class DeliveryError(EdgeError):
+    """The collector could not be reached or did not acknowledge. Every later
+    observation in the same run would fail the same way, so the run stops."""
+
+
 class PoisonObservation(EdgeError):
     """An outbox observation that can never be delivered (truncated, malformed,
     wrong schema or identity). Retrying it forever only wedges the edge, so it is
@@ -200,7 +205,7 @@ def _post(
             context=context,
         ) as response:
             if response.status != 200:
-                raise EdgeError("collector rejected observation")
+                raise DeliveryError("collector rejected observation")
             ack = json.loads(response.read(16_384))
     except (
         urllib.error.URLError,
@@ -208,13 +213,13 @@ def _post(
         ssl.SSLError,
         json.JSONDecodeError,
     ) as exc:
-        raise EdgeError("collector delivery failed") from exc
+        raise DeliveryError("collector delivery failed") from exc
     if (
         ack.get("schema_version") != "skcounter.ack.v1"
         or ack.get("idempotency_key") != idempotency_key
         or ack.get("payload_hash") != observation.get("payload_hash")
     ):
-        raise EdgeError("collector acknowledgement is invalid")
+        raise DeliveryError("collector acknowledgement is invalid")
     return ack
 
 
@@ -411,7 +416,13 @@ def run_once(
         failed = 0
         quarantined = 0
         quarantine_root = state_dir / "quarantine"
+        budget = float(config.get("delivery_budget_seconds", 180))
+        started = time.monotonic()
         for path in _observation_files(outbox):
+            if time.monotonic() - started > budget:
+                # Leave the rest pending for the next run instead of being
+                # killed by the scheduler timeout mid-backlog.
+                break
             try:
                 body, observation = _read_observation(path)
                 delays = list(config.get("retry_delays_seconds", [1, 2]))
@@ -443,6 +454,12 @@ def run_once(
             except PoisonObservation as exc:
                 _quarantine(path, outbox, quarantine_root, str(exc))
                 quarantined += 1
+            except DeliveryError:
+                # Collector unreachable: retrying a growing backlog file by file
+                # (3 attempts x request timeout each) outran the 300 s scheduler
+                # timeout on ollama, 2026-10-24. Stop; the rest stays pending.
+                failed += 1
+                break
             except EdgeError:
                 failed += 1
 

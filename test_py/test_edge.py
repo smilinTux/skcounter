@@ -187,6 +187,48 @@ class EdgeTest(unittest.TestCase):
             )
         self.assertFalse(status["collection_ok"])
 
+    def test_unreachable_collector_stops_after_first_observation(self):
+        outbox = self.root / "state" / "outbox" / "chiap08" / "skuser01"
+        outbox.mkdir(parents=True, mode=0o700)
+        for index in range(5):
+            path = outbox / f"{index}.json"
+            path.write_text(json.dumps({
+                "schema_version": "skcounter.snapshot.v1",
+                "measurement_lane": "harness_reported",
+                "node_id": "chiap08",
+                "principal_id": "skuser01",
+                "idempotency_key": str(index) * 64,
+                "payload_hash": str(index) * 64,
+            }), encoding="utf-8")
+            path.chmod(0o600)
+        attempts = []
+
+        def opener(_request, **_kwargs):
+            attempts.append(1)
+            raise urllib.error.URLError("offline")
+
+        status = run_once(
+            dict(self.config, retry_delays_seconds=[0, 0]),
+            collect=False,
+            token_minter=lambda _config: "signed-token",
+            opener=opener,
+            now=lambda: datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(attempts), 3)  # one file, its retries, then stop
+        self.assertEqual((status["failed"], status["pending"]), (1, 5))
+
+    def test_delivery_budget_defers_backlog_without_failing(self):
+        path, _value = self.write_observation()
+        status = run_once(
+            dict(self.config, delivery_budget_seconds=-1),
+            collect=False,
+            token_minter=lambda _config: "signed-token",
+            opener=lambda *_a, **_k: self.fail("budget spent, must not post"),
+            now=lambda: datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual((status["failed"], status["pending"]), (0, 1))
+        self.assertTrue(path.exists())
+
 
 class IncidentTrackingTest(unittest.TestCase):
     def setUp(self):
