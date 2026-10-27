@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -126,6 +126,8 @@ test("observation writer creates a private append-only file", () => {
   assert.equal(statSync(path).mode & 0o777, 0o600);
   assert.equal(statSync(join(root, "chiap08", "jarvis")).mode & 0o777, 0o700);
   assert.throws(() => writeObservation(snapshot, { outputDir: root }), /EEXIST/);
+  // Atomic publish: only the final observation remains, no partial temp files.
+  assert.deepEqual(readdirSync(join(root, "chiap08", "jarvis")), [path.split("/").pop()]);
 });
 
 test("invalid or reversed collection dates fail closed", () => {

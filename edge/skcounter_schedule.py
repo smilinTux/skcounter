@@ -12,6 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 
 def _append_ledger(path: Path, record: dict) -> None:
@@ -25,13 +26,72 @@ def _append_ledger(path: Path, record: dict) -> None:
         os.fsync(ledger.fileno())
 
 
-def _capture_failure(host: str, completed: datetime, returncode: int, job: str) -> None:
+INCIDENT_FILE = "failure-incident.json"
+DEFAULT_CAPTURE_AFTER_RUNS = 3
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+def _read_incident(path: Path) -> dict | None:
+    try:
+        incident = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return incident if isinstance(incident, dict) and incident.get("started") else None
+
+
+def _write_incident(path: Path, incident: dict) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(incident, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def _track_incident(
+    state_dir: Path,
+    *,
+    host: str,
+    job: str,
+    returncode: int,
+    completed: datetime,
+    capture_after_runs: int,
+    capture: Callable[[str, dict, int, str], bool],
+) -> None:
+    """Report one GTD item per failure incident, not one per run or per hour.
+
+    An incident starts at the first failed run and ends at the next successful
+    one. It is reported once, after ``capture_after_runs`` consecutive failures,
+    so a single transient blip (a collector restart, a slow network) that heals
+    on the next run never files anything. The GTD dedupe key is the incident
+    start, so a failure that lasts for days is still exactly one item.
+    """
+    path = state_dir / INCIDENT_FILE
+    incident = _read_incident(path)
+    if returncode == 0:
+        if incident is not None:
+            path.unlink(missing_ok=True)
+        return
+    if incident is None:
+        incident = {"started": _iso(completed), "runs": 0, "captured": False}
+    incident["runs"] = int(incident.get("runs", 0)) + 1
+    incident["last_exit"] = returncode
+    incident["last_failed_at"] = _iso(completed)
+    if not incident.get("captured") and incident["runs"] >= max(1, capture_after_runs):
+        incident["captured"] = capture(host, incident, returncode, job)
+    _write_incident(path, incident)
+
+
+def _capture_failure(host: str, incident: dict, returncode: int, job: str) -> bool:
+    """File the incident in GTD; True once the capture is known to have landed."""
     payload = {
-        "message": "SKCounter scheduled collection failed",
+        "message": "SKCounter scheduled collection failing",
         "host": host,
         "job": job,
         "exit": returncode,
-        "completed_at": completed.isoformat().replace("+00:00", "Z"),
+        "incident_started": incident["started"],
+        "consecutive_failures": incident["runs"],
     }
     try:
         from skcapstone.sdk import alert
@@ -41,14 +101,18 @@ def _capture_failure(host: str, completed: datetime, returncode: int, job: str) 
         pass
 
     command = Path.home() / ".skenv" / "bin" / "skcapstone"
-    if command.exists():
-        source_ref = f"cron:{job}:{host}:{completed.strftime('%Y%m%d%H')}"
-        subprocess.run(
+    if not command.exists():
+        return True
+    started = incident["started"].replace("-", "").replace(":", "")[:13]
+    source_ref = f"cron:{job}:{host}:incident-{started}"
+    try:
+        result = subprocess.run(
             [
                 str(command),
                 "gtd",
                 "capture",
-                f"Investigate {job} collection failure on {host}, exit {returncode}",
+                f"Investigate {job} collection failure on {host}, exit {returncode}, "
+                f"failing since {incident['started']} ({incident['runs']} consecutive runs)",
                 "--source",
                 "manual",
                 "--privacy",
@@ -60,9 +124,12 @@ def _capture_failure(host: str, completed: datetime, returncode: int, job: str) 
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=20,
+            timeout=60,
             check=False,
         )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -124,8 +191,20 @@ def main(argv: list[str] | None = None) -> int:
         "fleet_ok": fleet_error is None,
     }
     _append_ledger(state_dir / "run-ledger.jsonl", record)
-    if returncode != 0:
-        _capture_failure(record["host"], completed, returncode, job)
+    try:
+        _track_incident(
+            state_dir,
+            host=record["host"],
+            job=job,
+            returncode=returncode,
+            completed=completed,
+            capture_after_runs=int(
+                config.get("failure_capture_after_runs", DEFAULT_CAPTURE_AFTER_RUNS)
+            ),
+            capture=_capture_failure,
+        )
+    except OSError as exc:
+        print(f"SKCounter incident tracking error: {exc}", file=sys.stderr)
     if tail:
         print(tail)
     return returncode
