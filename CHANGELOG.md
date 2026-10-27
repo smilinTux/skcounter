@@ -6,6 +6,7 @@
 - Add deterministic content-addressed collector bundles with complete source, dependency, runtime, configuration, and provenance manifests plus isolated replay and port 9398 health qualification.
 - Preserve exact observation dimensions and valid records around malformed index lines.
 - Quarantine undeliverable edge observations (truncated, malformed, wrong schema or identity) instead of failing every run, write observations atomically, treat a collect timeout as a normal edge failure, and file one GTD item per failure incident (after 3 consecutive failed runs) instead of one per hour.
+- Stop an edge run at the first collector delivery failure instead of retrying every pending observation, and cap delivery per run (`delivery_budget_seconds`, default 180) so a backlog drains over several runs instead of hitting the scheduler timeout.
 
 All notable changes to SKCounter are documented here.
 
