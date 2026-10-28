@@ -42,6 +42,12 @@ COLLECTOR_STATE = HOME / ".local" / "state" / "skcounter-collector"
 TLS_DIR = CONFIG_DIR / "tls"
 DASHBOARD_DATA = HOME / ".local" / "state" / "skcounter"
 PORT = 9398
+# Per-host collector path overrides, kept across runs so a re-enroll never reverts
+# them: {"lan_bind_ip": "192.168.0.158", "lan_nodes": ["ollama"]}. Nodes listed in
+# lan_nodes deliver to https://<lan_bind_ip>:9398 instead of the tailnet address
+# (for hosts that are deliberately not on Tailscale).
+OVERRIDES_FILE = CONFIG_DIR / "fleet-enroll.json"
+SYSTEMD_USER = HOME / ".config" / "systemd" / "user"
 REMOTE_SRC = "$HOME/.local/src/skcounter"
 HARNESS_LABELS = ("pi-harness", "skcode-harness")
 
@@ -178,7 +184,44 @@ def _tool_env() -> dict:
     return env
 
 
-def ensure_collector(bind_ip: str) -> Path:
+def load_overrides() -> dict:
+    try:
+        return json.loads(OVERRIDES_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+
+
+def save_overrides(overrides: dict) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = OVERRIDES_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(overrides, indent=2) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, OVERRIDES_FILE)
+
+
+def ensure_lan_listener(lan_ip: str, bind_ip: str) -> None:
+    """Expose the collector on ONE LAN address through a TCP passthrough.
+
+    systemd-socket-proxyd forwards LAN_IP:PORT to the tailnet listener; TLS and
+    CapAuth stay end to end, and nothing listens on 0.0.0.0. The certificate
+    carries the LAN address as a second SAN (provision-collector-tls.sh)."""
+    SYSTEMD_USER.mkdir(parents=True, exist_ok=True)
+    (SYSTEMD_USER / "skcounter-collector-lan.socket").write_text(
+        "[Unit]\nDescription=SKCounter collector LAN listener (single address)\n\n"
+        f"[Socket]\nListenStream={lan_ip}:{PORT}\nFreeBind=true\n\n[Install]\nWantedBy=sockets.target\n"
+    )
+    (SYSTEMD_USER / "skcounter-collector-lan.service").write_text(
+        "[Unit]\nDescription=SKCounter collector LAN passthrough\n"
+        "Requires=skcounter-collector.service\nAfter=skcounter-collector.service\n\n"
+        f"[Service]\nExecStart=/usr/lib/systemd/systemd-socket-proxyd {bind_ip}:{PORT}\n"
+        "NoNewPrivileges=true\nPrivateTmp=true\n"
+    )
+    run(["systemctl", "--user", "daemon-reload"])
+    run(["systemctl", "--user", "enable", "skcounter-collector-lan.socket"])
+    run(["systemctl", "--user", "restart", "skcounter-collector-lan.socket"])
+
+
+def ensure_collector(bind_ip: str, extra_ips: tuple = ()) -> Path:
     marker = COLLECTOR_STATE / "installed-revision"
     pinned_revision()  # refuses a dirty or unpushed checkout
     revision = install_key()
@@ -190,7 +233,7 @@ def ensure_collector(bind_ip: str) -> Path:
         COLLECTOR_STATE.mkdir(parents=True, exist_ok=True)
         marker.write_text(revision + "\n")
     run([str(REPO / "scripts" / "install-runtime.sh"), "collector"])
-    run([str(REPO / "scripts" / "provision-collector-tls.sh"), bind_ip, str(TLS_DIR)])
+    run([str(REPO / "scripts" / "provision-collector-tls.sh"), bind_ip, str(TLS_DIR), *extra_ips])
     for sub in ("capauth", "capauth-gnupg"):
         (COLLECTOR_STATE / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(COLLECTOR_STATE / sub, 0o700)
@@ -231,6 +274,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fleet-home", type=Path, default=HOME / ".skcapstone")
     parser.add_argument("--bind-ip", default="", help="collector address (default: tailscale IPv4)")
+    parser.add_argument("--lan-bind-ip", default="",
+                        help="also serve the collector on this LAN address (saved in fleet-enroll.json)")
+    parser.add_argument("--lan-node", action="append", default=[],
+                        help="node ids that deliver over the LAN address (saved; for hosts not on Tailscale)")
     parser.add_argument("--node", action="append", help="limit to these node ids")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--passive", action="append", default=[],
@@ -250,21 +297,36 @@ def main() -> None:
     if not bind_ip:
         sys.exit("could not determine the collector IP; pass --bind-ip")
     collector_url = f"https://{bind_ip}:{PORT}"
+    overrides = load_overrides()
+    if args.lan_bind_ip:
+        overrides["lan_bind_ip"] = args.lan_bind_ip
+    if args.lan_node:
+        overrides["lan_nodes"] = sorted(set(overrides.get("lan_nodes", [])) | set(args.lan_node))
+    lan_ip = overrides.get("lan_bind_ip", "")
+    lan_nodes = set(overrides.get("lan_nodes", [])) if lan_ip else set()
+    if overrides.get("lan_nodes") and not lan_ip:
+        sys.exit("lan_nodes is set but there is no lan_bind_ip; pass --lan-bind-ip")
     print(f"collector {collector_url}  skcounter {pinned_revision()[:10]}")
+    if lan_ip:
+        print(f"collector LAN listener {lan_ip}:{PORT} for {sorted(lan_nodes) or 'no nodes'}")
     for node in nodes:
         where = "local" if is_local(node) else node["address"]
-        print(f"  {node['node_id']:12s} {where:16s} {'timer' if node['harness'] else 'passive'}")
+        via = " via LAN" if node["node_id"] in lan_nodes else ""
+        print(f"  {node['node_id']:12s} {where:16s} {'timer' if node['harness'] else 'passive'}{via}")
     if args.dry_run:
         return
 
-    ca_pem = ensure_collector(bind_ip).read_text(encoding="utf-8")
+    ca_pem = ensure_collector(bind_ip, (lan_ip,) if lan_ip else ()).read_text(encoding="utf-8")
+    if overrides:
+        save_overrides(overrides)
     config = json.loads(COLLECTOR_CONFIG.read_text()) if COLLECTOR_CONFIG.exists() else {}
     issuers = dict(config.get("trusted_issuers") or {})
     gnupg = COLLECTOR_STATE / "capauth-gnupg"
     failures = []
     for node in nodes:
         try:
-            armor = enroll_edge(node, collector_url, ca_pem)
+            node_url = f"https://{lan_ip}:{PORT}" if node["node_id"] in lan_nodes else collector_url
+            armor = enroll_edge(node, node_url, ca_pem)
             fingerprint = import_key(armor, gnupg)
             principal = run(["ssh", "-o", "BatchMode=yes", node["address"], "id -un"]).stdout.strip() \
                 if not is_local(node) else os.environ.get("USER", "")
@@ -304,6 +366,8 @@ def main() -> None:
         os.replace(tmp, COLLECTOR_CONFIG)
         run(["systemctl", "--user", "enable", "skcounter-collector.service"])
         run(["systemctl", "--user", "restart", "skcounter-collector.service"])
+        if lan_ip:
+            ensure_lan_listener(lan_ip, bind_ip)
         print(f"collector trusts {len(issuers)} edge identities; restarted")
         # SKDashboard reads acknowledged snapshots from <edge state>/sent/; the
         # projection copies every accepted fleet observation there each minute.
