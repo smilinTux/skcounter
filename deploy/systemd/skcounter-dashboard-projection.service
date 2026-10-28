@@ -1,0 +1,15 @@
+[Unit]
+Description=Project accepted SKCounter fleet observations into SKDashboard
+After=skcounter-collector.service
+
+[Service]
+Type=oneshot
+# SKDashboard reads acknowledged snapshots from $SKCOUNTER_DATA_DIR/sent/
+# (SKCOUNTER_DATA_DIR=%h/.local/state/skcounter on the collector host).
+ExecStart=/usr/bin/rsync -a --ignore-existing %h/.local/state/skcounter-collector/observations/ %h/.local/state/skcounter/sent/
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/skcounter
+UMask=0077
