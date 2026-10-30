@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import errno
 import fcntl
 import json
 import os
@@ -34,6 +35,24 @@ class EdgeError(RuntimeError):
 class DeliveryError(EdgeError):
     """The collector could not be reached or did not acknowledge. Every later
     observation in the same run would fail the same way, so the run stops."""
+
+
+class HostOffline(DeliveryError):
+    """This host has no network route at all ("Network is unreachable"), as a
+    sleeping Windows host does to its WSL VM overnight. Nothing is wrong with
+    the edge or the collector: the run defers, the outbox keeps every
+    observation, and the next run with a network delivers the backlog."""
+
+
+def _network_unreachable(exc: BaseException) -> bool:
+    seen: BaseException | None = exc
+    while seen is not None:
+        reason = getattr(seen, "reason", None)
+        for candidate in (seen, reason):
+            if isinstance(candidate, OSError) and candidate.errno == errno.ENETUNREACH:
+                return True
+        seen = seen.__cause__ or seen.__context__
+    return False
 
 
 class PoisonObservation(EdgeError):
@@ -213,6 +232,8 @@ def _post(
         ssl.SSLError,
         json.JSONDecodeError,
     ) as exc:
+        if _network_unreachable(exc):
+            raise HostOffline("host network is unreachable") from exc
         raise DeliveryError("collector delivery failed") from exc
     if (
         ack.get("schema_version") != "skcounter.ack.v1"
@@ -415,6 +436,7 @@ def run_once(
         acknowledged = 0
         failed = 0
         quarantined = 0
+        offline = False
         quarantine_root = state_dir / "quarantine"
         budget = float(config.get("delivery_budget_seconds", 180))
         started = time.monotonic()
@@ -445,7 +467,7 @@ def run_once(
                             # Index update failure is non-fatal; log but continue
                             pass
                         break
-                    except PoisonObservation:
+                    except (PoisonObservation, HostOffline):
                         raise
                     except EdgeError:
                         if not delays:
@@ -454,6 +476,11 @@ def run_once(
             except PoisonObservation as exc:
                 _quarantine(path, outbox, quarantine_root, str(exc))
                 quarantined += 1
+            except HostOffline:
+                # Not a failure: alerting every night a workstation sleeps
+                # filed a GTD item per hour (chiwk11, 2026-10-26 to 10-30).
+                offline = True
+                break
             except DeliveryError:
                 # Collector unreachable: retrying a growing backlog file by file
                 # (3 attempts x request timeout each) outran the 300 s scheduler
@@ -475,6 +502,7 @@ def run_once(
             "pending": len(_observation_files(outbox)),
             "sent_pruned": pruned,
             "collection_ok": collection_error is None,
+            "deferred_offline": offline,
         }
         _write_status(state_dir / "status.json", status)
         return status
