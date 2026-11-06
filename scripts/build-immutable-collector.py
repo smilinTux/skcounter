@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import importlib.util
 import io
 import json
 import os
@@ -178,6 +179,39 @@ def python_distributions() -> list[importlib.metadata.Distribution]:
     return [found[key] for key in sorted(found)]
 
 
+def _editable_package_files(
+    distribution: importlib.metadata.Distribution,
+) -> list[tuple[str, Path]] | None:
+    """Real source files of an editable (PEP 660) install, else None."""
+
+    try:
+        direct_url = json.loads(distribution.read_text("direct_url.json") or "{}")
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not (direct_url.get("dir_info") or {}).get("editable"):
+        return None
+    top_level = (distribution.read_text("top_level.txt") or "").split()
+    if not top_level:
+        top_level = [re.sub(r"[-.]+", "_", distribution.metadata["Name"]).lower()]
+    files: list[tuple[str, Path]] = []
+    for name in top_level:
+        spec = importlib.util.find_spec(name)
+        if spec is None:
+            raise SystemExit(f"editable distribution {name} cannot be located")
+        locations = list(spec.submodule_search_locations or [])
+        if not locations:
+            origin = Path(spec.origin).resolve()
+            files.append((origin.name, origin))
+            continue
+        for location in locations:
+            package_root = Path(location).resolve()
+            for path in sorted(package_root.rglob("*"), key=str):
+                if not path.is_file() or path.suffix == ".pyc" or "__pycache__" in path.parts:
+                    continue
+                files.append((f"{name}/{path.relative_to(package_root).as_posix()}", path))
+    return files
+
+
 def python_runtime_files() -> tuple[list[tuple[str, Path]], list[Path]]:
     """Collect a private stdlib and package closure without user-site imports."""
 
@@ -197,7 +231,23 @@ def python_runtime_files() -> tuple[list[tuple[str, Path]], list[Path]]:
 
     roots = [Path(path).resolve() for path in sys.path if path and Path(path).is_dir()]
     for distribution in python_distributions():
+        editable_sources = _editable_package_files(distribution)
+        if editable_sources is not None:
+            # An editable install's recorded files are only a redirect (.pth or an
+            # __editable__ finder) back into a source checkout, which an isolated
+            # bundle cannot follow. Bundle the real package source instead, plus
+            # the dist-info metadata, and drop the redirect.
+            for logical_relative, path in editable_sources:
+                result.append(
+                    (f"runtime/python/lib/{version}/site-packages/{logical_relative}", path)
+                )
+                if path.suffix == ".so":
+                    native.append(path)
         for item in distribution.files or ():
+            if editable_sources is not None and (
+                item.name.endswith(".pth") or item.name.startswith("__editable__")
+            ):
+                continue
             path = Path(distribution.locate_file(item)).resolve()
             if (
                 not path.is_file()
