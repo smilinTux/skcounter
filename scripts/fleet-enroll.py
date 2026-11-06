@@ -226,7 +226,9 @@ def ensure_lan_listener(lan_ip: str, bind_ip: str) -> None:
     )
     run(["systemctl", "--user", "daemon-reload"])
     run(["systemctl", "--user", "enable", "skcounter-collector-lan.socket"])
-    run(["systemctl", "--user", "restart", "skcounter-collector-lan.socket"])
+    # Not `restart`: systemd refuses to start the socket while its service still runs.
+    run(["systemctl", "--user", "stop", "skcounter-collector-lan.service", "skcounter-collector-lan.socket"])
+    run(["systemctl", "--user", "start", "skcounter-collector-lan.socket"])
 
 
 def ensure_collector(bind_ip: str, extra_ips: tuple = ()) -> Path:
