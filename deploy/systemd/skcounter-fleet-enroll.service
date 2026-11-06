@@ -1,0 +1,12 @@
+[Unit]
+Description=Enroll newly admitted fleet nodes into SKCounter
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.skenv/bin:/usr/local/bin:/usr/bin:/bin
+# Runs from the pinned checkout fleet-enroll syncs, so new nodes get the same code.
+ExecStart=%h/.local/src/skcounter/scripts/fleet-enroll.py --missing
+# A first install on a node runs the full test suite.
+TimeoutStartSec=2h
+Nice=10

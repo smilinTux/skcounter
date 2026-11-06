@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- `fleet-enroll` registers each reporting node's Fleet CronJob object and sets `fleet_object`, so edges publish status to the fleet.
+- Add `fleet-enroll --missing` and an hourly `skcounter-fleet-enroll.timer` on the collector, so a newly admitted fleet node is enrolled without a manual run.
+- Replace the dashboard projection timer with a symlink to the collector's observations: the copy doubled about 1 GB on disk and the edge's 7-day prune deleted it every run.
 - Defer edge delivery without failing when the host has no network at all (ENETUNREACH, e.g. a sleeping Windows host's WSL VM): the outbox keeps the backlog, status reports `deferred_offline`, and no GTD item is filed.
 - Add the bounded append-only latest-observation index for reconciled SKCounter reads.
 - Add deterministic content-addressed collector bundles with complete source, dependency, runtime, configuration, and provenance manifests plus isolated replay and port 9398 health qualification.

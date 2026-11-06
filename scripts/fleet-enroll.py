@@ -6,11 +6,14 @@ Run on the node that hosts (or will host) the collector:
     scripts/fleet-enroll.py                 # collector + every fleet node
     scripts/fleet-enroll.py --dry-run       # show the plan only
     scripts/fleet-enroll.py --node ollama   # just one node
+    scripts/fleet-enroll.py --missing       # only nodes the collector does not trust yet
 
 Nodes come from this estate's fleet store
 (``~/.skcapstone/fleet/objects/node/node-<id>.json``), so a node admitted with
-``skcapstone fleet admit`` is picked up on the next run. Safe to re-run: every
-step is idempotent, and an existing edge identity is kept.
+``skcapstone fleet admit`` is enrolled by the hourly
+``skcounter-fleet-enroll.timer`` (``--missing``), which this script enables. Safe
+to re-run: every step is idempotent, and an existing edge identity is kept. A new
+node off the tailnet still needs ``--lan-node`` once.
 
 Per node (over SSH, or locally for this host) it syncs this checkout, ensures
 Node.js >= 20, runs ``install-user.sh`` and ``install-runtime.sh edge``,
@@ -19,7 +22,8 @@ collector, and enables the timer on harness nodes (label ``pi-harness=true`` or
 ``--passive`` opts a node out: by default every fleet node reports, and a node
 with no harness truthfully reports zero usage).
 On the collector it installs the runtime and TLS, imports every edge public
-key into the verifier keyring, merges ``trusted_issuers`` and restarts.
+key into the verifier keyring, merges ``trusted_issuers``, restarts, and registers
+each reporting node's Fleet CronJob object so its edge can publish status.
 """
 
 from __future__ import annotations
@@ -40,8 +44,11 @@ CONFIG_DIR = HOME / ".config" / "skcounter"
 COLLECTOR_CONFIG = CONFIG_DIR / "collector.json"
 COLLECTOR_STATE = HOME / ".local" / "state" / "skcounter-collector"
 TLS_DIR = CONFIG_DIR / "tls"
-DASHBOARD_DATA = HOME / ".local" / "state" / "skcounter"
+# SKDashboard reads <data dir>/sent/. This is NOT the edge state dir: the edge prunes
+# its own sent/ after 7 days, and the collector's observations are the fleet's record.
+DASHBOARD_DATA = HOME / ".local" / "state" / "skcounter-dashboard"
 PORT = 9398
+SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]
 # Per-host collector path overrides, kept across runs so a re-enroll never reverts
 # them: {"lan_bind_ip": "192.168.0.158", "lan_nodes": ["ollama"]}. Nodes listed in
 # lan_nodes deliver to https://<lan_bind_ip>:9398 instead of the tailnet address
@@ -123,7 +130,8 @@ cat > "$HOME/.config/skcounter/edge.json.tmp" <<JSON
   "gnupg_home": "$state/capauth-gnupg",
   "node_id": "$node_id",
   "principal_id": "$USER",
-  "subject": "skcounter:$node_id:$USER"
+  "subject": "skcounter:$node_id:$USER",
+  "fleet_object": "skcounter-edge-$node_id"
 }
 JSON
 chmod 600 "$HOME/.config/skcounter/edge.json.tmp"
@@ -167,8 +175,8 @@ def is_local(node: dict) -> bool:
     return node["address"] in names or node["node_id"] in names
 
 
-def run(cmd, *, input_text=None, check=True) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, input=input_text, text=True, capture_output=True, check=check)
+def run(cmd, *, input_text=None, check=True, env=None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, input=input_text, text=True, capture_output=True, check=check, env=env)
 
 
 def tailscale_ipv4() -> str:
@@ -252,9 +260,9 @@ def enroll_edge(node: dict, collector_url: str, ca_pem: str) -> str:
     else:
         host = node["address"]
         sync = "bash -c " + shlex.quote(SYNC_SCRIPT) + " sync " + shlex.quote(ORIGIN) + " " + pinned_revision()
-        run(["ssh", "-o", "BatchMode=yes", host, sync])
+        run([*SSH, host, sync])
         remote = "bash -c " + shlex.quote(EDGE_SCRIPT) + " edge " + " ".join(map(shlex.quote, args))
-        proc = run(["ssh", "-o", "BatchMode=yes", host, remote], input_text=ca_pem, check=False)
+        proc = run([*SSH, host, remote], input_text=ca_pem, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"edge install failed on {node['node_id']}: {(proc.stdout + proc.stderr)[-800:]}")
     text = proc.stdout
@@ -270,6 +278,21 @@ def import_key(armor: str, gnupg: Path) -> str:
     return next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
 
 
+def not_yet_trusted(nodes: list[dict], config: dict) -> list[dict]:
+    """The nodes with no enabled issuer in the collector config."""
+    trusted = {
+        issuer.get("node_id")
+        for issuer in (config.get("trusted_issuers") or {}).values()
+        if issuer.get("enabled")
+    }
+    return [node for node in nodes if node["node_id"] not in trusted]
+
+
+def register_fleet_object(node_id: str) -> None:
+    """Apply the Fleet CronJob object the edge's status is published against."""
+    run([str(REPO / "scripts" / "apply-fleet-cronjobs.sh"), node_id], env=_tool_env())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--fleet-home", type=Path, default=HOME / ".skcapstone")
@@ -279,6 +302,8 @@ def main() -> None:
     parser.add_argument("--lan-node", action="append", default=[],
                         help="node ids that deliver over the LAN address (saved; for hosts not on Tailscale)")
     parser.add_argument("--node", action="append", help="limit to these node ids")
+    parser.add_argument("--missing", action="store_true",
+                        help="only nodes the collector does not trust yet; a no-op when there are none")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--passive", action="append", default=[],
                         help="node ids to install without a timer (default: every node reports)")
@@ -293,6 +318,12 @@ def main() -> None:
         node["harness"] = node["node_id"] not in set(args.passive)
     if not nodes:
         sys.exit("no fleet nodes found; admit nodes with `skcapstone fleet admit` first")
+    if args.missing:
+        known = json.loads(COLLECTOR_CONFIG.read_text()) if COLLECTOR_CONFIG.exists() else {}
+        nodes = not_yet_trusted(nodes, known)
+        if not nodes:
+            print("every fleet node is already enrolled")
+            return
     bind_ip = args.bind_ip or tailscale_ipv4()
     if not bind_ip:
         sys.exit("could not determine the collector IP; pass --bind-ip")
@@ -328,8 +359,10 @@ def main() -> None:
             node_url = f"https://{lan_ip}:{PORT}" if node["node_id"] in lan_nodes else collector_url
             armor = enroll_edge(node, node_url, ca_pem)
             fingerprint = import_key(armor, gnupg)
-            principal = run(["ssh", "-o", "BatchMode=yes", node["address"], "id -un"]).stdout.strip() \
+            principal = run([*SSH, node["address"], "id -un"]).stdout.strip() \
                 if not is_local(node) else os.environ.get("USER", "")
+            if node["harness"]:
+                register_fleet_object(node["node_id"])
             issuers[fingerprint] = {
                 "enabled": True,
                 "node_id": node["node_id"],
@@ -369,12 +402,14 @@ def main() -> None:
         if lan_ip:
             ensure_lan_listener(lan_ip, bind_ip)
         print(f"collector trusts {len(issuers)} edge identities; restarted")
-        # SKDashboard reads acknowledged snapshots from <edge state>/sent/; the
-        # projection copies every accepted fleet observation there each minute.
-        (DASHBOARD_DATA / "sent").mkdir(parents=True, exist_ok=True)
+        # The dashboard reads the collector's accepted observations directly.
+        DASHBOARD_DATA.mkdir(parents=True, exist_ok=True)
         os.chmod(DASHBOARD_DATA, 0o700)
-        run(["systemctl", "--user", "enable", "--now", "skcounter-dashboard-projection.timer"])
-        run(["systemctl", "--user", "start", "skcounter-dashboard-projection.service"])
+        (COLLECTOR_STATE / "observations").mkdir(parents=True, exist_ok=True)
+        link = DASHBOARD_DATA / "sent"
+        if not link.is_symlink():
+            link.symlink_to(COLLECTOR_STATE / "observations")
+        run(["systemctl", "--user", "enable", "--now", "skcounter-fleet-enroll.timer"])
     print(f"dashboard: SKCOUNTER_DATA_DIR={DASHBOARD_DATA}")
     if failures:
         sys.exit("some nodes failed:\n  " + "\n  ".join(failures))
