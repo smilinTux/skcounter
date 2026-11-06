@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the fleet hourly for nodes not yet enrolled in SKCounter
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target
