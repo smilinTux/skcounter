@@ -1,3 +1,4 @@
+import errno
 import json
 import ssl
 import tempfile
@@ -216,6 +217,26 @@ class EdgeTest(unittest.TestCase):
         )
         self.assertEqual(len(attempts), 3)  # one file, its retries, then stop
         self.assertEqual((status["failed"], status["pending"]), (1, 5))
+
+    def test_offline_host_defers_backlog_without_failing(self):
+        path, _value = self.write_observation()
+        attempts = []
+
+        def opener(_request, **_kwargs):
+            attempts.append(1)
+            raise urllib.error.URLError(OSError(errno.ENETUNREACH, "Network is unreachable"))
+
+        status = run_once(
+            dict(self.config, retry_delays_seconds=[0, 0]),
+            collect=False,
+            token_minter=lambda _config: "signed-token",
+            opener=opener,
+            now=lambda: datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc),
+        )
+        self.assertEqual(len(attempts), 1)  # no retries into a dead network
+        self.assertEqual((status["failed"], status["pending"]), (0, 1))
+        self.assertTrue(status["deferred_offline"])
+        self.assertTrue(path.exists())
 
     def test_delivery_budget_defers_backlog_without_failing(self):
         path, _value = self.write_observation()
