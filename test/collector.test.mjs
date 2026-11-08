@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { collectSnapshot } from "../src/snapshot.mjs";
 import { canonicalJson } from "../src/snapshot.mjs";
-import { authorize, CollectorStore, RequestError, validateSnapshot } from "../services/collector.mjs";
+import { authorize, CollectorStore, RequestError, validateGatewayObservation, validateSnapshot } from "../services/collector.mjs";
 
 function snapshot() {
   const graph = {
@@ -148,4 +148,60 @@ test("collector appends once, acknowledges duplicates, and blocks request replay
   assert.equal(statSync(projection).mode & 0o777, 0o600);
   store.reserveReplay("11111111111111111111111111111111");
   assert.throws(() => store.reserveReplay("11111111111111111111111111111111"), /EEXIST/);
+});
+
+function observationV2() {
+  const unsigned = {
+    schema_version: "skcounter.gateway_observation.v2",
+    measurement_lane: "gateway_observed",
+    node_id: "chiap08",
+    principal_id: "skgateway",
+    collector: { product: "skcounter", facade_version: "0.2.0", backend: "skgateway", backend_version: "0.1.0" },
+    observed_at: "2026-09-05T12:30:00Z",
+    bucket_timezone: "UTC",
+    window: { start: "2026-09-05T00:00:00Z", end: "2026-09-05T12:30:00Z" },
+    source_state_digest: "a".repeat(64),
+    facts: {
+      gateway: { uptime_seconds: 1200, backend_health: { "chiap08-qwen38": { status: "ok", errorRate: 0 } } },
+      requests: { total: 10, active_concurrency: 2, error_count: 1, recent_requests_5m: 30, recent_errors_5m: 0, rate_5m_per_second: 0.1 },
+      latency_ms: { "chiap08-qwen38/qwen3.8": { p50: 120, p95: 400, p99: 900, mean: 200, count: 25 } },
+      queue: { wait_ms_percentiles: { unavailable: "gateway_surface_does_not_expose_queue_telemetry" }, admission_outcomes: { unavailable: "gateway_surface_does_not_expose_queue_telemetry" } },
+      rate_limits: { http_429_count: { unavailable: "gateway_surface_does_not_expose_rate_limit_counts" } },
+      tokens: { input: 100, output: 50, throughput_5m_per_second: 0.5 },
+      generation: { throughput_tokens_per_second: { unavailable: "gateway_stats_surface_does_not_expose_generation_throughput" } },
+      cost: { total_usd: 0.25, unpriced_requests: 0, truth: "actual" },
+      breakdowns: { models: ["qwen3.8"], providers: ["local"], nodes: ["chiap08-qwen38"], clients: ["atlas"], apps: { unavailable: "gateway_surface_does_not_expose_application_attribution" }, rails: ["local"] },
+      daily_token_rows: [{ bucket: "2026-09-05", input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, cache_write_tokens: 0, request_count: 10, model: "qwen3.8", backend: "chiap08-qwen38", agent: "atlas" }],
+      events: { count: 2, by_type: { info: 2 } },
+      activity: { count: 1, by_type: {} },
+    },
+  };
+  const hash = createHash("sha256").update(canonicalJson(unsigned)).digest("hex");
+  return { ...unsigned, idempotency_key: hash, payload_hash: hash };
+}
+
+test("collector accepts the bounded gateway observation v2 contract", () => {
+  const observation = observationV2();
+  assert.equal(validateGatewayObservation(observation).schema_version, "skcounter.gateway_observation.v2");
+});
+
+test("collector rejects v2 observations off the gateway lane or with prohibited fields", () => {
+  const wrongLane = observationV2();
+  wrongLane.measurement_lane = "harness_reported";
+  wrongLane.payload_hash = "0".repeat(64);
+  wrongLane.idempotency_key = "0".repeat(64);
+  assert.throws(() => validateGatewayObservation(wrongLane), (error) => error.code === "lane_not_allowed");
+
+  const prohibited = observationV2();
+  prohibited.facts.requests.prompt = "must never leave the edge";
+  assert.throws(() => validateGatewayObservation(prohibited), (error) => error.code === "prohibited_field");
+
+  const tampered = observationV2();
+  tampered.facts.requests.total = 999;
+  assert.throws(() => validateGatewayObservation(tampered), (error) => error.code === "payload_hash_mismatch");
+
+  const deep = observationV2();
+  let node = deep.facts;
+  for (let i = 0; i < 10; i += 1) node = node.requests = { nested: node.requests };
+  assert.throws(() => validateGatewayObservation(deep), (error) => error.code === "invalid_schema");
 });

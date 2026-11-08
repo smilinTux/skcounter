@@ -31,6 +31,78 @@ const ACTIVITY_KEYS = new Set(["active_seconds", "longest_continuous_seconds", "
 const PERFORMANCE_KEYS = new Set(["duration_ms", "timed_tokens", "sample_count", "token_coverage", "ms_per_1k_tokens"]);
 const ALL_VIEWS = new Set(["models", "daily", "hourly", "agents", "workspaces", "sessions", "tasks", "time_metrics"]);
 
+const OBSERVATION_V2_KEYS = new Set([
+  "schema_version", "idempotency_key", "measurement_lane", "node_id", "principal_id",
+  "collector", "observed_at", "bucket_timezone", "window", "source_state_digest",
+  "facts", "payload_hash",
+]);
+const OBSERVATION_V2_FACT_KEYS = new Set([
+  "gateway", "requests", "latency_ms", "queue", "rate_limits", "tokens", "generation",
+  "cost", "breakdowns", "daily_token_rows", "events", "activity",
+]);
+const PROHIBITED_FACT_KEYS = new Set([
+  "prompt", "response", "content", "tool_input", "tool_output", "workspace_path",
+  "source_path", "session_id", "credential", "capability_token", "api_key", "cookie",
+  "oauth_token",
+]);
+
+function unavailableFact(value, path) {
+  exactKeys(value, new Set(["unavailable"]), new Set(["unavailable"]), path);
+  boundedString(value.unavailable, `${path}.unavailable`, 128);
+}
+
+function factValue(value, path, depth = 0) {
+  if (depth > 6) throw new RequestError(422, "invalid_schema", `${path} is too deep`);
+  if (value === null) throw new RequestError(422, "invalid_schema", `${path} must not be null`);
+  if (typeof value === "string") { boundedString(value, path, 256); return; }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) throw new RequestError(422, "invalid_schema", `${path} is invalid`);
+    return;
+  }
+  if (typeof value === "boolean") return;
+  if (Array.isArray(value)) {
+    if (value.length > 10000) throw new RequestError(422, "invalid_schema", `${path} is too large`);
+    value.forEach((child, index) => factValue(child, `${path}[${index}]`, depth + 1));
+    return;
+  }
+  if (typeof value !== "object") throw new RequestError(422, "invalid_schema", `${path} is invalid`);
+  for (const key of Object.keys(value)) {
+    if (PROHIBITED_FACT_KEYS.has(key.toLowerCase())) throw new RequestError(422, "prohibited_field", `${path}.${key} is prohibited`);
+  }
+  if (Object.keys(value).length === 1 && "unavailable" in value) { unavailableFact(value, path); return; }
+  for (const [key, child] of Object.entries(value)) factValue(child, `${path}.${key}`, depth + 1);
+}
+
+export function validateGatewayObservation(snapshot) {
+  exactKeys(snapshot, OBSERVATION_V2_KEYS, OBSERVATION_V2_KEYS, "observation");
+  if (snapshot.schema_version !== "skcounter.gateway_observation.v2") throw new RequestError(422, "unsupported_schema");
+  if (snapshot.measurement_lane !== "gateway_observed") throw new RequestError(422, "lane_not_allowed");
+  if (!HEX64.test(snapshot.idempotency_key) || !HEX64.test(snapshot.payload_hash)) throw new RequestError(422, "invalid_schema", "observation hashes are invalid");
+  if (!SAFE_ID.test(snapshot.node_id) || !SAFE_ID.test(snapshot.principal_id)) throw new RequestError(422, "invalid_schema", "node or principal is invalid");
+  exactKeys(snapshot.collector, COLLECTOR_KEYS, COLLECTOR_KEYS, "observation.collector");
+  if (snapshot.collector.product !== "skcounter") throw new RequestError(422, "invalid_schema", "collector product is invalid");
+  if (snapshot.collector.backend !== "skgateway") throw new RequestError(422, "invalid_schema", "collector backend is invalid");
+  boundedString(snapshot.collector.facade_version, "observation.collector.facade_version", 64);
+  boundedString(snapshot.collector.backend_version, "observation.collector.backend_version", 64);
+  dateTime(snapshot.observed_at, "observation.observed_at");
+  boundedString(snapshot.bucket_timezone, "observation.bucket_timezone", 64);
+  exactKeys(snapshot.window, WINDOW_KEYS, WINDOW_KEYS, "observation.window");
+  dateTime(snapshot.window.start, "observation.window.start");
+  dateTime(snapshot.window.end, "observation.window.end");
+  if (Date.parse(snapshot.window.start) > Date.parse(snapshot.window.end)) throw new RequestError(422, "invalid_schema", "observation window is reversed");
+  if (!HEX64.test(snapshot.source_state_digest)) throw new RequestError(422, "invalid_schema", "source digest is invalid");
+  exactKeys(snapshot.facts, OBSERVATION_V2_FACT_KEYS, OBSERVATION_V2_FACT_KEYS, "observation.facts");
+  factValue(snapshot.facts, "observation.facts");
+  const computed = computePayloadHash(snapshot);
+  if (snapshot.payload_hash !== computed || snapshot.idempotency_key !== computed) throw new RequestError(422, "payload_hash_mismatch");
+  return snapshot;
+}
+
+function validateSubmittedSnapshot(snapshot, options) {
+  if (snapshot?.schema_version === "skcounter.gateway_observation.v2") return validateGatewayObservation(snapshot);
+  return validateSnapshot(snapshot, options);
+}
+
 export class RequestError extends Error {
   constructor(status, code, message = code) {
     super(message);
@@ -335,7 +407,7 @@ export function createCollectorServer(config, { now = () => new Date(), authVeri
       const body = await readBody(request, config.max_body_bytes || 1048576);
       let snapshot;
       try { snapshot = JSON.parse(body.toString("utf8")); } catch { throw new RequestError(400, "malformed_json"); }
-      validateSnapshot(snapshot, { allowedViews: config.allowed_views });
+      validateSubmittedSnapshot(snapshot, { allowedViews: config.allowed_views });
       const observedTime = Date.parse(snapshot.observed_at);
       const maximumAge = (config.max_observation_age_seconds || 604800) * 1000;
       if (observedTime > now().getTime() + skew) throw new RequestError(422, "observation_in_future");
